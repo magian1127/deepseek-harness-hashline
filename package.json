@@ -1,0 +1,62 @@
+{
+  "name": "deepseek-harness-hashline",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Hash-anchored UTF-8 file reading and atomic editing tools for DeepSeek Harness",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./core": "./lib/core.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "docs",
+    "scripts/setup-linked-install.mjs",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "setup:link": "node scripts/setup-linked-install.mjs",
+    "check": "node --check lib/core.js && node --check lib/index.js && node --check lib/runtime-entry.js && node --check lib/client.js && node --check scripts/setup-linked-install.mjs && node --check test/setup.mjs && node --check test/register-peer.mjs && node --check test/core.test.mjs && node --check test/plugin.test.mjs && node --check test/client.test.mjs",
+    "test:setup": "node test/setup.mjs",
+    "pretest": "node test/setup.mjs",
+    "test": "node --import ./test/register-peer.mjs --test test/core.test.mjs test/plugin.test.mjs test/client.test.mjs",
+    "prepack": "npm run check && npm test"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "hashline",
+    "hash-anchored-editing",
+    "coding-agent"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.5 <0.2.0",
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings-plugins",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    }
+  }
+}

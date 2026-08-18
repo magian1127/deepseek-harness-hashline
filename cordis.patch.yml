@@ -1,0 +1,5 @@
+# Registers Hashline settings and its process-wide tools. The optional edit
+# replacement is installed only in each live Agent's scoped tool layer.
+- insert:
+    - id: tool-hashline
+      name: deepseek-harness-hashline
