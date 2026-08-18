@@ -41,7 +41,14 @@ CRLF/LF 或空白漂移时的机械可靠性问题。
 
 ## 安装
 
-把下面示例里的 `<绝对路径>` 换成你本机实际的绝对路径。普通本地安装：
+把下面示例里的 `<绝对路径>` 换成你本机实际的绝对路径。源码目录的 `lib/` 是构建产物；首次开发安装执行 `npm install`，首次安装或源码更新后执行 `npm run build`：
+
+```powershell
+npm install
+npm run build
+```
+
+普通本地安装：
 
 ```powershell
 dsh plugin --profile web add "file:<绝对路径>/deepseek-harness-hashline"

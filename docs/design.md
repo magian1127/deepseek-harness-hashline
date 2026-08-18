@@ -83,11 +83,13 @@ Web client 通过 `settingsScope.bind({ namespace: 'hashline' })` 读写同一 H
 
 ## 包形态
 
-Host 使用纯 ESM JavaScript；Web 半侧是按 DSH client module 约定交付的经典 `__ModuleLoader__`
-bundle，均不需要发布前转译。运行时 peer `@deepseek-ai/dsh-llm` 和
-`@deepseek-ai/schemastery` 在 `file:` 安装中由 DSH profile 模块回退提供，在 `link:` 开发安装中由
-`setup:link` 建立的 junction 提供。标准安装命令把 `cordis.patch.yml` 作为 profile bundle 层加入，并从
-package manifest 发现 client bundle；不提供自定义热安装 CLI，避免复制与核心编辑能力无关的 profile 监督逻辑。
+实现源码全部位于 `src/`，采用纯 TypeScript 构建：`tsc` 将 Host/core 生成纯 ESM JavaScript
+与声明文件，`tsdown` 将 `src/client.ts` 生成按 DSH client module 约定交付的经典
+`__ModuleLoader__` bundle。发布包消费 `lib/` 产物，不要求安装时再转译。运行时 peer
+`@deepseek-ai/dsh-llm` 和 `@deepseek-ai/schemastery` 在 `file:` 安装中由 DSH profile 模块回退提供，在
+`link:` 开发安装中由 `setup:link` 建立的 junction 提供。标准安装命令把 `cordis.patch.yml` 作为 profile
+bundle 层加入，并从 package manifest 发现 client bundle；不提供自定义热安装 CLI，避免复制与核心编辑
+能力无关的 profile 监督逻辑。
 
 ## 后续候选
 

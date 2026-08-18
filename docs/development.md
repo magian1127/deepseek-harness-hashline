@@ -6,10 +6,11 @@
 
 | 路径 | 职责 |
 | --- | --- |
-| `lib/client.js` | 浏览器插件：向 `settings.plugin.item` 贡献配置卡片 |
-| `lib/index.js` | 主机插件：`hashline_read` / `hashline_edit` 工具、设置、提示词、Agent scoped 替换、HMR |
-| `lib/core.js` | 锚点/编辑的纯逻辑核心（拆分、计划、预览） |
-| `lib/runtime-entry.js` | 运行时入口 |
+| `src/client.ts` | 客户端 TypeScript 源码：向 `settings.plugin.item` 贡献配置卡片 |
+| `src/index.ts` | Host TypeScript 源码：`hashline_read` / `hashline_edit` 工具、设置、提示词、Agent scoped 替换、HMR |
+| `src/core.ts` | 锚点/编辑的纯逻辑 TypeScript 核心（拆分、计划、预览） |
+| `src/runtime-entry.ts` | TypeScript 运行时兼容入口 |
+| `lib/` | `tsc` 与 `tsdown` 生成的可发布 JavaScript、声明和 bundle，不直接编辑 |
 | `cordis.patch.yml` | 随包发布的持久 bundle 行 |
 | `test/` | 回归测试 |
 | `scripts/setup-linked-install.mjs` | `link:` 开发安装的 peer junction 建立 |
@@ -22,6 +23,13 @@
   namespace 注册的 `settings.plugin.item` keyed slot；旧 rc.5 只能运行 Host 工具，不能保证网页配置卡片可用。
 
 ## 安装方式
+
+源码仓库不跟踪 `lib/` 构建目录。首次使用 `file:` 或 `link:` 安装时先执行 `npm install`；首次安装和每次源码修改后执行 `npm run build`：
+
+```powershell
+npm install
+npm run build
+```
 
 ### 普通本地安装（file:）
 
@@ -53,13 +61,27 @@ dsh plugin --profile web add "link:<绝对路径>/deepseek-harness-hashline"
 `.npmrc` 的 `omit=peer` 让 npm 不自动安装 peer 依赖，避免在 `link:` 开发安装时于插件根目录生成第二份
 `dsh-llm`（即第二份 `HarnessError` 类），确保 `HarnessError` 和 settings schema 与宿主使用兼容模块。
 
+## TypeScript 构建
+
+仓库采用纯 TypeScript 源码构建模式：`src/` 是唯一实现来源，`lib/` 是发布产物。安装开发依赖后执行：
+
+```powershell
+npm run build
+```
+
+- `build:host`：用 `tsc` 生成 Host、核心和声明文件；
+- `build:client`：先用 `tsc` 校验客户端并生成声明，再用 `tsdown` 从 `src/client.ts` 生成 DSH `__ModuleLoader__` bundle；
+- `build`：按上述顺序完成两侧构建，避免客户端 bundle 被 Host 编译覆盖。
+
+不要直接修改 `lib/`；源码修改后重新构建，再进行本地安装或测试。
+
 ## Host 热重载
 
-插件使用官方 Cordis HMR 服务精确监视 `lib/index.js` 和 `lib/core.js`。首次组合完成后，Host 源码修改会
-在线卸载旧 Fiber 并应用新代码，无需重启 DSH。若部署的 HMR root 已覆盖插件目录则不重复注册。
+插件使用官方 Cordis HMR 服务精确监视构建产物 `lib/index.js` 和 `lib/core.js`。首次组合完成后，Host 源码修改并重新构建后会在线卸载旧 Fiber
+并应用新代码，无需重启 DSH。若部署的 HMR root 已覆盖插件目录则不重复注册。
 
-修改 `lib/client.js` 时，从同一 DSH checkout 运行 `pnpm run dev:web` 可自动推送 client HMR；未运行
-watcher 时刷新页面即可，同样不需要重启 Host。
+`lib/client.js` 是由 `src/client.ts` 生成的 DSH client module bundle。修改客户端源码后重新执行
+`npm run build:client`；从同一 DSH checkout 运行 `pnpm run dev:web` 可自动推送 client HMR，未运行 watcher 时刷新页面即可，同样不需要重启 Host。
 
 插件不提供自定义热安装 CLI，不复制 `dsh-zh` 的热安装监督器；安装统一使用 `dsh plugin`。
 
@@ -74,7 +96,7 @@ npm test
 npm pack --dry-run --json
 ```
 
-- `check`：对 `lib/`、`scripts/` 和 `test/` 做语法检查。
+- `check`：先执行完整 TypeScript/客户端构建，再对生成的 `lib/`、`scripts/` 和 `test/` 做语法检查。
 - `test`：运行三组回归（core、plugin、client），覆盖 BOM、CRLF/LF、末尾换行、删除、批量顺序、重叠拒绝、
   锚点过期、稳定读取、版本竞争、沙箱策略、一次性审批、文件观察事件、工具架构、设置热切换、
   智能体作用域替换和客户端卡片。
@@ -84,6 +106,7 @@ npm pack --dry-run --json
 
 ## 包形态
 
-Host 使用纯 ESM JavaScript；Web 半侧是按 DSH client module 约定交付的经典 `__ModuleLoader__` bundle，
-均不需要发布前转译。标准安装命令把 `cordis.patch.yml` 作为 profile bundle 层加入，并从 package manifest
-发现 client bundle。
+Host 与 Web 的实现源码均为 `src/` 下的 TypeScript。`npm run build` 将 Host/core 编译为纯 ESM
+JavaScript 与声明文件，并将客户端源码打包为按 DSH client module 约定交付的经典 `__ModuleLoader__`
+bundle；发布包只消费 `lib/` 产物，不要求安装时再转译。标准安装命令把 `cordis.patch.yml` 作为 profile
+bundle 层加入，并从 package manifest 发现 client bundle。

@@ -1,61 +1,111 @@
 import { createHash } from 'node:crypto'
 import { HarnessError } from '@deepseek-ai/dsh-llm'
 
+
 export const DEFAULT_HASH_LENGTH = 4
 export const DEFAULT_MAX_LINE_LENGTH = 500
 export const DEFAULT_READ_LIMIT = 2000
 export const DEFAULT_CONTEXT_LINES = 2
 
-const EDIT_KINDS = ['set_line', 'replace_lines', 'insert_after', 'replace']
+/** 锚定/精确替换编辑的四种变体名称。 */
+export type EditKind = 'set_line' | 'replace_lines' | 'insert_after' | 'replace'
 
+const EDIT_KINDS: readonly EditKind[] = ['set_line', 'replace_lines', 'insert_after', 'replace']
+
+/** Hashline 编辑错误码（稳定、可机器路由）。 */
+export type HashlineErrorCode =
+  | 'HASHLINE_INVALID_ARGUMENT'
+  | 'HASHLINE_INVALID_CONFIG'
+  | 'HASHLINE_INVALID_ANCHOR'
+  | 'HASHLINE_ANCHOR_OUT_OF_RANGE'
+  | 'HASHLINE_HASH_MISMATCH'
+  | 'HASHLINE_INVALID_RANGE'
+  | 'HASHLINE_OVERLAPPING_EDIT'
+  | 'HASHLINE_TEXT_NOT_FOUND'
+  | 'HASHLINE_TEXT_NOT_UNIQUE'
+  | 'HASHLINE_MIXED_EDIT_MODES'
+
+/** 附加到 HashlineError 上的结构化诊断信息（`details`）。 */
+export type HashlineErrorDetails = Record<string, unknown>
+
+/**
+ * Hashline 插件专用错误，扩展自 `HarnessError`。
+ * 除继承的稳定 `code` 外，可携带结构化 `details`。
+ */
 export class HashlineError extends HarnessError {
-  constructor(code, message, details = undefined, options = undefined) {
+  details?: HashlineErrorDetails
+
+  constructor(
+    code: HashlineErrorCode,
+    message: string,
+    details?: HashlineErrorDetails,
+    options?: ErrorOptions,
+  ) {
     super(message, code, options)
     if (details !== undefined) this.details = details
   }
 }
 
-function fail(code, message, details = undefined, options = undefined) {
+function fail(
+  code: HashlineErrorCode,
+  message: string,
+  details?: HashlineErrorDetails,
+  options?: ErrorOptions,
+): never {
   throw new HashlineError(code, message, details, options)
 }
 
-function isPlainObject(value) {
+function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function requireString(value, label) {
+function requireString(value: unknown, label: string): string {
   if (typeof value !== 'string') fail('HASHLINE_INVALID_ARGUMENT', `${label} must be a string`)
   return value
 }
 
-function requireBoolean(value, label) {
+function requireBoolean(value: unknown, label: string): boolean {
   if (typeof value !== 'boolean') fail('HASHLINE_INVALID_ARGUMENT', `${label} must be a boolean`)
   return value
 }
 
-function assertOnlyKeys(value, allowed, label) {
-  const extras = Object.keys(value).filter(key => !allowed.includes(key))
+function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
+  const extras = Object.keys(value).filter((key) => !allowed.includes(key))
   if (extras.length > 0) {
     fail('HASHLINE_INVALID_ARGUMENT', `${label} contains unsupported field(s): ${extras.join(', ')}`)
   }
 }
 
-export function hashText(value, length = DEFAULT_HASH_LENGTH) {
+export function hashText(value: string, length: number = DEFAULT_HASH_LENGTH): string {
   if (!Number.isInteger(length) || length < 3 || length > 16) {
     fail('HASHLINE_INVALID_CONFIG', 'hashLength must be an integer between 3 and 16')
   }
   return createHash('sha256').update(value, 'utf8').digest('hex').slice(0, length)
 }
 
-export function hashLine(line, length = DEFAULT_HASH_LENGTH) {
+/** 文本文件的一行：正文 `text` 与其完整行尾 `eol`（末行可为 `''`）。 */
+export interface TextLine {
+  text: string
+  eol: string
+}
+
+export function hashLine(line: TextLine, length: number = DEFAULT_HASH_LENGTH): string {
   return hashText(line.text + line.eol, length)
 }
 
-export function splitTextFile(content) {
+/** 拆分后的文本文件模型：BOM 标志、去除 BOM 的正文、行数组与行尾风格。 */
+export interface SplitTextFile {
+  bom: boolean
+  body: string
+  lines: TextLine[]
+  eol: 'unknown' | 'mixed' | 'crlf' | 'lf'
+}
+
+export function splitTextFile(content: string): SplitTextFile {
   requireString(content, 'content')
   const bom = content.startsWith('\uFEFF')
   const body = bom ? content.slice(1) : content
-  const lines = []
+  const lines: TextLine[] = []
   let start = 0
 
   for (let index = 0; index < body.length; index += 1) {
@@ -78,12 +128,12 @@ export function splitTextFile(content) {
   }
 }
 
-export function joinTextFile({ bom, lines }) {
-  const body = lines.map(line => line.text + line.eol).join('')
+export function joinTextFile({ bom, lines }: { bom: boolean; lines: TextLine[] }): string {
+  const body = lines.map((line) => line.text + line.eol).join('')
   return (bom ? '\uFEFF' : '') + body
 }
 
-export function detectEol(lines) {
+export function detectEol(lines: TextLine[]): 'unknown' | 'mixed' | 'crlf' | 'lf' {
   let crlf = 0
   let lf = 0
   for (const line of lines) {
@@ -95,7 +145,7 @@ export function detectEol(lines) {
   return crlf > 0 ? 'crlf' : 'lf'
 }
 
-export function dominantEol(lines) {
+export function dominantEol(lines: TextLine[]): string {
   let crlf = 0
   let lf = 0
   for (const line of lines) {
@@ -105,7 +155,13 @@ export function dominantEol(lines) {
   return crlf > lf ? '\r\n' : '\n'
 }
 
-export function parseReplacementText(value) {
+/** 替换文本解析结果：规范化后的行与是否存在尾随换行。 */
+export interface ReplacementText {
+  lines: string[]
+  trailingEol: boolean
+}
+
+export function parseReplacementText(value: string): ReplacementText {
   requireString(value, 'new_text')
   if (value === '') return { lines: [], trailingEol: false }
 
@@ -117,7 +173,13 @@ export function parseReplacementText(value) {
   return { lines, trailingEol }
 }
 
-export function truncateLine(text, maxLength = DEFAULT_MAX_LINE_LENGTH) {
+/** 行显示结果：可能被截断的文本与截断标志。 */
+export interface TruncationResult {
+  text: string
+  truncated: boolean
+}
+
+export function truncateLine(text: string, maxLength: number = DEFAULT_MAX_LINE_LENGTH): TruncationResult {
   if (!Number.isInteger(maxLength) || maxLength < 1) {
     fail('HASHLINE_INVALID_CONFIG', 'maxLineLength must be a positive integer')
   }
@@ -128,7 +190,22 @@ export function truncateLine(text, maxLength = DEFAULT_MAX_LINE_LENGTH) {
   }
 }
 
-export function lineRecord(lines, index, options = {}) {
+/** 行记录选项：哈希长度与最大显示行长度。 */
+export interface LineRecordOptions {
+  hashLength?: number
+  maxLineLength?: number
+}
+
+/** 一行展示记录：行号、锚点、哈希与（可能截断的）文本。 */
+export interface LineRecord {
+  number: number
+  hash: string
+  anchor: string
+  text: string
+  truncated: boolean
+}
+
+export function lineRecord(lines: TextLine[], index: number, options: LineRecordOptions = {}): LineRecord {
   const hashLength = options.hashLength ?? DEFAULT_HASH_LENGTH
   const maxLineLength = options.maxLineLength ?? DEFAULT_MAX_LINE_LENGTH
   const line = lines[index]
@@ -143,7 +220,14 @@ export function lineRecord(lines, index, options = {}) {
   }
 }
 
-export function parseAnchor(value, hashLength = DEFAULT_HASH_LENGTH) {
+/** 解析后的锚点：行号、规范化哈希与原始锚点字符串。 */
+export interface ParsedAnchor {
+  line: number
+  hash: string
+  anchor: string
+}
+
+export function parseAnchor(value: string, hashLength: number = DEFAULT_HASH_LENGTH): ParsedAnchor {
   const anchor = requireString(value, 'anchor')
   const expression = new RegExp(`^(\\d+):([0-9a-fA-F]{${hashLength}})$`)
   const match = expression.exec(anchor)
@@ -157,18 +241,23 @@ export function parseAnchor(value, hashLength = DEFAULT_HASH_LENGTH) {
   return { line: Number(match[1]), hash: match[2].toLowerCase(), anchor }
 }
 
-function contextRecords(lines, lineNumber, options) {
+/** 锚点校验的上下文选项。 */
+export interface AnchorOptions extends LineRecordOptions {
+  contextLines?: number
+}
+
+function contextRecords(lines: TextLine[], lineNumber: number, options: AnchorOptions): LineRecord[] {
   const contextLines = options.contextLines ?? DEFAULT_CONTEXT_LINES
   const start = Math.max(1, lineNumber - contextLines)
   const end = Math.min(lines.length, lineNumber + contextLines)
-  const records = []
+  const records: LineRecord[] = []
   for (let line = start; line <= end; line += 1) {
     records.push(lineRecord(lines, line - 1, options))
   }
   return records
 }
 
-function mismatchMessage(label, parsed, actual, context) {
+function mismatchMessage(label: string, parsed: ParsedAnchor, actual: string, context: LineRecord[]): string {
   const lines = [
     `hashline_edit: hash mismatch for ${label} anchor "${parsed.anchor}"; line ${parsed.line} is now ${parsed.line}:${actual}`,
     'The file changed after this anchor was read; no edit was applied.',
@@ -180,7 +269,12 @@ function mismatchMessage(label, parsed, actual, context) {
   return lines.join('\n')
 }
 
-export function validateAnchor(lines, value, label, options = {}) {
+export function validateAnchor(
+  lines: TextLine[],
+  value: string,
+  label: string,
+  options: AnchorOptions = {},
+): number {
   const hashLength = options.hashLength ?? DEFAULT_HASH_LENGTH
   const parsed = parseAnchor(value, hashLength)
   if (parsed.line < 1 || parsed.line > lines.length) {
@@ -203,7 +297,54 @@ export function validateAnchor(lines, value, label, options = {}) {
   return parsed.line
 }
 
-export function parseEditEntries(rawEdits) {
+/** set_line 编辑变体。 */
+export interface SetLineEdit {
+  kind: 'set_line'
+  order: number
+  anchor: string
+  newText: string
+}
+
+/** replace_lines 编辑变体。 */
+export interface ReplaceLinesEdit {
+  kind: 'replace_lines'
+  order: number
+  startAnchor: string
+  endAnchor: string
+  newText: string
+}
+
+/** insert_after 编辑变体。 */
+export interface InsertAfterEdit {
+  kind: 'insert_after'
+  order: number
+  anchor: string
+  newText: string
+}
+
+/** replace（精确文本替换）编辑变体。 */
+export interface ReplaceEdit {
+  kind: 'replace'
+  order: number
+  oldText: string
+  newText: string
+  all: boolean
+}
+
+/** 解析阶段得到的编辑变体（不含解析后的行号）。 */
+export type ParsedEdit = SetLineEdit | ReplaceLinesEdit | InsertAfterEdit | ReplaceEdit
+
+/** 锚定编辑（不含 replace 逃生舱）：参与锚点解析与行号补全。 */
+export type AnchorEdit = SetLineEdit | ReplaceLinesEdit | InsertAfterEdit
+
+/** 编辑请求的输入形式：恰好一个变体键。 */
+export type RawEdit =
+  | { set_line: { anchor: unknown; new_text: unknown } }
+  | { replace_lines: { start_anchor: unknown; end_anchor: unknown; new_text: unknown } }
+  | { insert_after: { anchor: unknown; new_text: unknown } }
+  | { replace: { old_text: unknown; new_text: unknown; all?: unknown } }
+
+export function parseEditEntries(rawEdits: RawEdit[]): ParsedEdit[] {
   if (!Array.isArray(rawEdits) || rawEdits.length === 0) {
     fail('HASHLINE_INVALID_ARGUMENT', 'edits must be a non-empty array')
   }
@@ -213,15 +354,16 @@ export function parseEditEntries(rawEdits) {
       fail('HASHLINE_INVALID_ARGUMENT', `edits[${order}] must be an object with exactly one variant`)
     }
     const keys = Object.keys(entry)
-    if (keys.length !== 1 || !EDIT_KINDS.includes(keys[0])) {
+    if (keys.length !== 1 || !EDIT_KINDS.includes(keys[0] as EditKind)) {
       fail(
         'HASHLINE_INVALID_ARGUMENT',
         `edits[${order}] must contain exactly one variant (${EDIT_KINDS.join(' | ')})`,
       )
     }
 
-    const kind = keys[0]
-    const value = entry[kind]
+    const kind = keys[0] as EditKind
+    const record = entry as Record<string, unknown>
+    const value = record[kind]
     if (!isPlainObject(value)) {
       fail('HASHLINE_INVALID_ARGUMENT', `edits[${order}].${kind} must be an object`)
     }
@@ -233,7 +375,7 @@ export function parseEditEntries(rawEdits) {
         order,
         anchor: requireString(value.anchor, `edits[${order}].set_line.anchor`),
         newText: requireString(value.new_text, `edits[${order}].set_line.new_text`),
-      }
+      } satisfies SetLineEdit
     }
 
     if (kind === 'replace_lines') {
@@ -244,7 +386,7 @@ export function parseEditEntries(rawEdits) {
         startAnchor: requireString(value.start_anchor, `edits[${order}].replace_lines.start_anchor`),
         endAnchor: requireString(value.end_anchor, `edits[${order}].replace_lines.end_anchor`),
         newText: requireString(value.new_text, `edits[${order}].replace_lines.new_text`),
-      }
+      } satisfies ReplaceLinesEdit
     }
 
     if (kind === 'insert_after') {
@@ -258,7 +400,7 @@ export function parseEditEntries(rawEdits) {
         order,
         anchor: requireString(value.anchor, `edits[${order}].insert_after.anchor`),
         newText,
-      }
+      } satisfies InsertAfterEdit
     }
 
     assertOnlyKeys(value, ['old_text', 'new_text', 'all'], `edits[${order}].replace`)
@@ -276,31 +418,52 @@ export function parseEditEntries(rawEdits) {
       oldText,
       newText,
       all: value.all === undefined ? false : requireBoolean(value.all, `edits[${order}].replace.all`),
-    }
+    } satisfies ReplaceEdit
   })
 }
 
-function describeEdit(edit) {
+/**
+ * 已解析出目标行号的锚定编辑（`set_line` / `replace_lines` / `insert_after`），
+ * `resolveAnchoredEdits` 阶段在原对象上补充 `start` / `end` / `boundary`。
+ */
+export type AnchoredEdit = ResolvedSetLineEdit | ResolvedReplaceLinesEdit | ResolvedInsertAfterEdit
+
+export interface ResolvedSetLineEdit extends SetLineEdit {
+  start: number
+  end: number
+}
+
+export interface ResolvedReplaceLinesEdit extends ReplaceLinesEdit {
+  start: number
+  end: number
+}
+
+export interface ResolvedInsertAfterEdit extends InsertAfterEdit {
+  boundary: number
+}
+
+/** 范围编辑（拥有 start/end 的锚定编辑）：set_line 与 replace_lines。 */
+export type RangeEdit = ResolvedSetLineEdit | ResolvedReplaceLinesEdit
+
+function describeEdit(edit: AnchoredEdit): string {
   return edit.kind === 'insert_after'
     ? `insert_after @${edit.boundary}`
     : `${edit.kind} ${edit.start}..${edit.end}`
 }
 
-export function assertNoOverlaps(edits) {
+export function assertNoOverlaps(edits: AnchoredEdit[]): void {
   for (let left = 0; left < edits.length; left += 1) {
     for (let right = left + 1; right < edits.length; right += 1) {
       const first = edits[left]
       const second = edits[right]
       if (first.kind === 'insert_after' && second.kind === 'insert_after') continue
 
-      const insert = first.kind === 'insert_after'
-        ? first
-        : second.kind === 'insert_after' ? second : undefined
-      const replacement = insert === first ? second : insert === second ? first : undefined
-
-      const overlaps = insert !== undefined
-        ? replacement.start <= insert.boundary && insert.boundary <= replacement.end
-        : first.start <= second.end && second.start <= first.end
+      // 此处已排除“两者均为 insert_after”，故当一方是 insert_after 时另一方必为范围编辑。
+      const overlaps = first.kind === 'insert_after'
+        ? (second as RangeEdit).start <= first.boundary && first.boundary <= (second as RangeEdit).end
+        : second.kind === 'insert_after'
+          ? first.start <= second.boundary && second.boundary <= first.end
+          : first.start <= second.end && second.start <= first.end
 
       if (overlaps) {
         fail(
@@ -313,14 +476,20 @@ export function assertNoOverlaps(edits) {
   }
 }
 
-function materializeBlock(block, internalEol, finalEol) {
+/** 一次锚定编辑的增删行统计。 */
+interface EditStats {
+  removedLines: number
+  addedLines: number
+}
+
+function materializeBlock(block: ReplacementText, internalEol: string, finalEol: string): TextLine[] {
   return block.lines.map((text, index) => ({
     text,
     eol: index === block.lines.length - 1 ? finalEol : internalEol,
   }))
 }
 
-function applyAnchoredEdit(lines, edit, eol) {
+function applyAnchoredEdit(lines: TextLine[], edit: AnchoredEdit, eol: string): EditStats {
   if (edit.kind === 'set_line') {
     const index = edit.start - 1
     const originalEol = lines[index].eol
@@ -361,30 +530,40 @@ function applyAnchoredEdit(lines, edit, eol) {
   return { removedLines: 0, addedLines: block.lines.length }
 }
 
-function resolveAnchoredEdits(lines, edits, options) {
+function resolveAnchoredEdits(lines: TextLine[], edits: AnchorEdit[], options: AnchorOptions): AnchoredEdit[] {
+  const resolved: AnchoredEdit[] = []
   for (const edit of edits) {
     if (edit.kind === 'set_line') {
-      edit.start = validateAnchor(lines, edit.anchor, 'set_line', options)
-      edit.end = edit.start
+      const start = validateAnchor(lines, edit.anchor, 'set_line', options)
+      resolved.push({ ...edit, start, end: start })
       continue
     }
     if (edit.kind === 'replace_lines') {
-      edit.start = validateAnchor(lines, edit.startAnchor, 'replace_lines.start', options)
-      edit.end = validateAnchor(lines, edit.endAnchor, 'replace_lines.end', options)
-      if (edit.end < edit.start) {
+      const start = validateAnchor(lines, edit.startAnchor, 'replace_lines.start', options)
+      const end = validateAnchor(lines, edit.endAnchor, 'replace_lines.end', options)
+      if (end < start) {
         fail(
           'HASHLINE_INVALID_RANGE',
           `hashline_edit: replace_lines end anchor (${edit.endAnchor}) precedes start anchor (${edit.startAnchor})`,
         )
       }
+      resolved.push({ ...edit, start, end })
       continue
     }
-    edit.boundary = validateAnchor(lines, edit.anchor, 'insert_after', options)
+    const boundary = validateAnchor(lines, edit.anchor, 'insert_after', options)
+    resolved.push({ ...edit, boundary })
   }
-  assertNoOverlaps(edits)
+  assertNoOverlaps(resolved)
+  return resolved
 }
 
-function applyExactReplaces(body, edits) {
+/** 精确替换应用的统计结果。 */
+interface ReplaceResult {
+  body: string
+  replacements: number
+}
+
+function applyExactReplaces(body: string, edits: ReplaceEdit[]): ReplaceResult {
   let current = body
   let replacements = 0
   for (const edit of edits) {
@@ -411,7 +590,7 @@ function applyExactReplaces(body, edits) {
   return { body: current, replacements }
 }
 
-export function firstChangedLine(before, after) {
+export function firstChangedLine(before: string, after: string): number | null {
   if (before === after) return null
   const limit = Math.min(before.length, after.length)
   let index = 0
@@ -423,10 +602,26 @@ export function firstChangedLine(before, after) {
   return line
 }
 
-export function planEdits(content, rawEdits, options = {}) {
+/** 一次编辑计划的结果。 */
+export interface EditPlan {
+  after: string
+  changed: boolean
+  editsApplied: number
+  replacements: number
+  removedLines: number
+  addedLines: number
+  firstChangedLine: number | null
+}
+
+/** 编辑计划的选项。 */
+export interface EditOptions extends AnchorOptions {}
+
+export function planEdits(content: string, rawEdits: RawEdit[], options: EditOptions = {}): EditPlan {
   const parsed = parseEditEntries(rawEdits)
-  const anchored = parsed.filter(edit => edit.kind !== 'replace')
-  const replacements = parsed.filter(edit => edit.kind === 'replace')
+  const anchored = parsed.filter(
+    (edit): edit is AnchorEdit => edit.kind !== 'replace',
+  )
+  const replacements = parsed.filter((edit): edit is ReplaceEdit => edit.kind === 'replace')
   if (anchored.length > 0 && replacements.length > 0) {
     fail(
       'HASHLINE_MIXED_EDIT_MODES',
@@ -449,15 +644,15 @@ export function planEdits(content, rawEdits, options = {}) {
     }
   }
 
-  resolveAnchoredEdits(file.lines, anchored, options)
-  const sorted = [...anchored].sort((left, right) => {
+  const resolved = resolveAnchoredEdits(file.lines, anchored, options)
+  const sorted = [...resolved].sort((left, right) => {
     const leftLine = left.kind === 'insert_after' ? left.boundary : left.start
     const rightLine = right.kind === 'insert_after' ? right.boundary : right.start
     if (leftLine !== rightLine) return rightLine - leftLine
     return right.order - left.order
   })
 
-  const lines = file.lines.map(line => ({ ...line }))
+  const lines = file.lines.map((line) => ({ ...line }))
   const eol = dominantEol(lines)
   let removedLines = 0
   let addedLines = 0
@@ -483,14 +678,14 @@ export function planEdits(content, rawEdits, options = {}) {
   }
 }
 
-export function previewContent(content, firstLine, options = {}) {
+export function previewContent(content: string, firstLine: number | null, options: EditOptions = {}): LineRecord[] {
   const file = splitTextFile(content)
   if (file.lines.length === 0) return []
   const contextLines = options.contextLines ?? DEFAULT_CONTEXT_LINES
   const center = firstLine === null ? 1 : Math.min(Math.max(firstLine, 1), file.lines.length)
   const start = Math.max(1, center - contextLines)
   const end = Math.min(file.lines.length, center + contextLines)
-  const result = []
+  const result: LineRecord[] = []
   for (let line = start; line <= end; line += 1) {
     result.push(lineRecord(file.lines, line - 1, options))
   }
