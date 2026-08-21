@@ -13,7 +13,7 @@
 | `lib/` | `tsc` 与 `tsdown` 生成的可发布 JavaScript、声明和 bundle，不直接编辑 |
 | `cordis.patch.yml` | 随包发布的持久 bundle 行 |
 | `test/` | 回归测试 |
-| `scripts/setup-linked-install.mjs` | `link:` 开发安装的 peer junction 建立 |
+| `src/profile-modules.ts` | 运行时从 profile 解析 DSH peer（schemastery / dsh-llm），失败时降级 |
 
 ## 环境要求
 
@@ -41,25 +41,20 @@ dsh plugin --profile web add "file:<绝对路径>/deepseek-harness-hashline"
 
 ### 持续开发（link:）
 
-让 profile 直接加载当前源码并保留 Host 热重载。链接前先建立本地 DSH peer junction：
+让 profile 直接加载当前源码并保留 Host 热重载：
 
 ```powershell
-npm run setup:link -- "<绝对路径到DSH源码>/deepseek-harness"
 dsh plugin --profile web add "link:<绝对路径>/deepseek-harness-hashline"
 ```
 
-**不要在没有执行 `setup:link` 时传裸路径或 `link:`。** Node 会从链接后的源码真实路径解析 DSH peer，
-缺少本地 junction 时会以 `ERR_MODULE_NOT_FOUND` 启动失败。
+新版运行时经 `src/profile-modules.ts` 从 profile 解析 DSH peer，`file:` 与 `link:` 安装都不再需要本地 junction 或 `setup:link`。
 
 ## Peer 解析
 
-运行时 peer `@deepseek-ai/dsh-llm` 和 `@deepseek-ai/schemastery`：
-
-- 在 `file:` 安装中由 DSH profile 模块回退提供；
-- 在 `link:` 开发安装中由 `setup:link` 建立的 junction 提供。
-
-`.npmrc` 的 `omit=peer` 让 npm 不自动安装 peer 依赖，避免在 `link:` 开发安装时于插件根目录生成第二份
-`dsh-llm`（即第二份 `HarnessError` 类），确保 `HarnessError` 和 settings schema 与宿主使用兼容模块。
+运行时 peer `@deepseek-ai/dsh-llm` 和 `@deepseek-ai/schemastery` 不写入本包依赖：`src/profile-modules.ts`
+在运行时用 `createRequire` 从当前 profile 的解析上下文加载它们，因此与主进程拿到同一模块实例
+（同一份 `HarnessError` 与 schemastery），`file:` 与 `link:` 安装走同一条回退路径；加载失败时降级为
+普通 `Error` 并关闭 settings UI，而不是启动失败。
 
 ## TypeScript 构建
 
@@ -85,22 +80,35 @@ npm run build
 
 插件不提供自定义热安装 CLI，不复制 `dsh-zh` 的热安装监督器；安装统一使用 `dsh plugin`。
 
+## 运行环境验证与热更新限制
+
+以下经验来自真实运行环境（DSH rev 36ef35304487）的一次完整验证，影响 Host 更新的交付路径：
+
+- 当前运行版的 Host 侧 HMR 服务整体不工作：官方 patch watcher 不生效（已知），dsh-zh 的自热重载
+  （registerConfig + partialReload）同样零触发——给其 lib/index.js 注入文件探针后修改，apply 不再被调用。
+- 热挂载（dsh-zh hotMount）依赖 @deepseek-ai/cordis-plugin-include，当前 profile 未安装该依赖，热挂载
+  静默失败；翻转 profile 双清单（dependencies + dsh.profile.bundles）只触发官方 removed（卸载旧 Fiber），
+  added（重挂）无通道处理。因此 file: 安装下 Host 代码更新需重启 DSH：先把新 lib/ 覆盖到 profile
+  物化副本，重启后生效；翻转只用于验证，不建议在生产使用。
+- 端到端复验法（重启后执行，验证修复是否真正上线）：三个场景对应真实会话分析出的三类编辑失败——
+  ①过期锚点（行号漂移）应静默重定位成功；②坏锚点（哈希截断）报错应回显附近真实锚点，复制后一次闭环；
+  ③CRLF 文件用 LF old_text 做 replace 应成功且替换后仍为纯 CRLF。测试文件放临时目录，测完删除。
+
 ## 测试与验证
 
 任何文件改动后执行：
 
 ```powershell
-npm run test:setup
 npm run check
 npm test
 npm pack --dry-run --json
 ```
 
-- `check`：先执行完整 TypeScript/客户端构建，再对生成的 `lib/`、`scripts/` 和 `test/` 做语法检查。
+- `check`：先执行完整 TypeScript/客户端构建，再对生成的 `lib/` 和 `test/` 做语法检查。
 - `test`：运行三组回归（core、plugin、client），覆盖 BOM、CRLF/LF、末尾换行、删除、批量顺序、重叠拒绝、
   锚点过期、稳定读取、版本竞争、沙箱策略、一次性审批、文件观察事件、工具架构、设置热切换、
-  智能体作用域替换和客户端卡片。
-- `test:setup` 只把测试依赖装到 `test/node_modules`，不会在插件根目录生成会遮蔽宿主 peer 的副本。
+  智能体作用域替换和客户端卡片。测试用 `test/fixtures/dsh-home` 假 profile 隔离 DSH 运行时 peer，
+  不依赖真实安装。
 
 浏览器端改动需要刷新网页；Host 文件在 HMR 服务可用时自动热重载，否则按日志提示重启。
 

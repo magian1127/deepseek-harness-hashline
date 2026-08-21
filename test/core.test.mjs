@@ -1,17 +1,23 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
-import {
+// 用 fixtures 假 profile 隔离 DSH 运行时模块（dsh-llm），
+// 必须在 import 库模块之前设置。
+process.env.DSH_HOME = fileURLToPath(new URL('./fixtures/dsh-home', import.meta.url))
+
+const {
   HashlineError,
   hashLine,
   lineRecord,
+  parseAnchor,
   parseReplacementText,
   planEdits,
   previewContent,
   splitTextFile,
   joinTextFile,
   truncateLine,
-} from '../lib/core.js'
+} = await import('../lib/core.js')
 
 function anchor(content, lineNumber) {
   const file = splitTextFile(content)
@@ -250,4 +256,51 @@ test('无变化计划不虚报 changed', () => {
     { set_line: { anchor: anchor(content, 1), new_text: 'same' } },
   ])
   assert.equal(result.changed, false)
+})
+
+test('锚点行号漂移时唯一哈希匹配自动重定位', () => {
+  // 原始文件 3 行；读取后文件被外部插入一行，原第 3 行漂到第 4 行。
+  const original = 'a\nb\nc\n'
+  const drifted = 'a\nb\nX\nc\n'
+  // 用“原始第 3 行 c”的哈希（未变），但行号仍是 3（已漂移）。
+  const staleAnchor = anchor(original, 3)
+  const result = apply(drifted, [
+    { set_line: { anchor: staleAnchor, new_text: 'C' } },
+  ])
+  // 唯一哈希匹配：自动重定位到第 4 行的 c，改为 C。
+  assert.equal(result, 'a\nb\nX\nC\n')
+})
+
+test('锚点哈希存在多个候选时拒绝并报告歧义', () => {
+  const content = 'a\nb\na\n'
+  // a 的哈希在文件第 1、3 行各出现一次；把锚点行号指到第 2 行（b），
+  // 使其哈希不匹配，且在全文件有 2 个候选 → 拒绝并报告歧义。
+  const aHash = hashLine(splitTextFile(content).lines[0])
+  const ambiguousAnchor = `2:${aHash}`
+  assert.throws(() => apply(content, [
+    { set_line: { anchor: ambiguousAnchor, new_text: 'A' } },
+  ]), error => {
+    assert.equal(error.code, 'HASHLINE_HASH_MISMATCH')
+    assert.ok(Array.isArray(error.details.ambiguousLines))
+    return true
+  })
+})
+
+test('无效锚点报错回显附近真实锚点', () => {
+  const lines = splitTextFile('alpha\nbeta\ngamma\n').lines
+  assert.throws(() => parseAnchor('2:9', 4, lines, { contextLines: 1 }), error => {
+    assert.equal(error.code, 'HASHLINE_INVALID_ANCHOR')
+    assert.match(error.message, /Near line 2/)
+    assert.match(error.message, /2:[0-9a-f]{4}\|beta/)
+    return true
+  })
+})
+
+test('replace 对 CRLF 文件自动做 LF 归一匹配', () => {
+  const content = 'alpha\r\nbeta\r\n'
+  const result = planEdits(content, [
+    { replace: { old_text: 'beta\n', new_text: 'gamma\n' } },
+  ])
+  assert.equal(result.after, 'alpha\r\ngamma\r\n')
+  assert.equal(result.replacements, 1)
 })

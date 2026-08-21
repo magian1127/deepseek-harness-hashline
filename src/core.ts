@@ -1,5 +1,13 @@
 import { createHash } from 'node:crypto'
-import { HarnessError } from '@deepseek-ai/dsh-llm'
+import { loadDshLlm } from './profile-modules.js'
+
+type HarnessErrorConstructor = new (message: string, code: string, options?: ErrorOptions) => Error
+
+// 优先从 profile 解析 DSH 的 HarnessError（与主进程同一实例，保留错误身份
+// 与结构化 { name, code } 序列化）；profile 不可用时降级为普通 Error。
+const HarnessErrorBase: HarnessErrorConstructor =
+  (loadDshLlm() as { HarnessError?: HarnessErrorConstructor } | null)?.HarnessError ??
+  (Error as unknown as HarnessErrorConstructor)
 
 
 export const DEFAULT_HASH_LENGTH = 4
@@ -29,10 +37,11 @@ export type HashlineErrorCode =
 export type HashlineErrorDetails = Record<string, unknown>
 
 /**
- * Hashline 插件专用错误，扩展自 `HarnessError`。
+ * Hashline 插件专用错误，继承 DSH 的 `HarnessError`（经 profile 解析加载）。
  * 除继承的稳定 `code` 外，可携带结构化 `details`。
  */
-export class HashlineError extends HarnessError {
+export class HashlineError extends HarnessErrorBase {
+  readonly code: HashlineErrorCode
   details?: HashlineErrorDetails
 
   constructor(
@@ -42,6 +51,8 @@ export class HashlineError extends HarnessError {
     options?: ErrorOptions,
   ) {
     super(message, code, options)
+    this.code = code
+    this.name = 'HashlineError'
     if (details !== undefined) this.details = details
   }
 }
@@ -227,16 +238,31 @@ export interface ParsedAnchor {
   anchor: string
 }
 
-export function parseAnchor(value: string, hashLength: number = DEFAULT_HASH_LENGTH): ParsedAnchor {
+export function parseAnchor(
+  value: string,
+  hashLength: number = DEFAULT_HASH_LENGTH,
+  lines?: TextLine[],
+  options: AnchorOptions = {},
+): ParsedAnchor {
   const anchor = requireString(value, 'anchor')
   const expression = new RegExp(`^(\\d+):([0-9a-fA-F]{${hashLength}})$`)
   const match = expression.exec(anchor)
   if (match === null) {
-    fail(
-      'HASHLINE_INVALID_ANCHOR',
-      `invalid anchor ${JSON.stringify(anchor)}: expected LINE:HASH with ${hashLength} hexadecimal characters`,
-      { anchor },
-    )
+    const details: HashlineErrorDetails = { anchor }
+    let message = `invalid anchor ${JSON.stringify(anchor)}: expected LINE:HASH with ${hashLength} hexadecimal characters`
+    // 当能拿到文件行且能解析出整数行号时，回显该行附近的真实锚点，
+    // 让“哈希被截断/写错”能被自愈，而不是盲猜重试。
+    if (lines !== undefined && lines.length > 0) {
+      const lineMatch = /^(\d+)/.exec(anchor)
+      const hintedLine = lineMatch === null ? NaN : Number(lineMatch[1])
+      if (Number.isInteger(hintedLine) && hintedLine >= 1 && hintedLine <= lines.length) {
+        details.hintedLine = hintedLine
+        const records = contextRecords(lines, hintedLine, options)
+        const body = records.map((record) => `${record.anchor}|${record.text}`).join('\n')
+        message += `\nNear line ${hintedLine}:\n${body}\nCopy the correct LINE:HASH anchor above and retry.`
+      }
+    }
+    fail('HASHLINE_INVALID_ANCHOR', message, details)
   }
   return { line: Number(match[1]), hash: match[2].toLowerCase(), anchor }
 }
@@ -276,7 +302,7 @@ export function validateAnchor(
   options: AnchorOptions = {},
 ): number {
   const hashLength = options.hashLength ?? DEFAULT_HASH_LENGTH
-  const parsed = parseAnchor(value, hashLength)
+  const parsed = parseAnchor(value, hashLength, lines, options)
   if (parsed.line < 1 || parsed.line > lines.length) {
     fail(
       'HASHLINE_ANCHOR_OUT_OF_RANGE',
@@ -287,11 +313,33 @@ export function validateAnchor(
 
   const actual = hashLine(lines[parsed.line - 1], hashLength)
   if (actual !== parsed.hash) {
+    // 锚点漂移重定位：行号因先前编辑而漂移是常态。若全文件里
+    // 恰有一行内容哈希与锚点哈希一致，则静默重定位到该行；
+    // 0 个或 2 个以上候选仍按 stale-read 报错，避免误改。
+    const candidates: number[] = []
+    for (let index = 0; index < lines.length; index += 1) {
+      if (hashLine(lines[index], hashLength) === parsed.hash) candidates.push(index + 1)
+    }
+    if (candidates.length === 1) {
+      return candidates[0]
+    }
     const context = contextRecords(lines, parsed.line, options)
+    const relocationHint =
+      candidates.length > 1
+        ? `\nThe anchor hash also matches lines [${candidates.join(', ')}]; re-read the file to disambiguate before retrying.`
+        : ''
     fail(
       'HASHLINE_HASH_MISMATCH',
-      mismatchMessage(label, parsed, actual, context),
-      { label, anchor: parsed.anchor, line: parsed.line, expected: parsed.hash, actual, context },
+      mismatchMessage(label, parsed, actual, context) + relocationHint,
+      {
+        label,
+        anchor: parsed.anchor,
+        line: parsed.line,
+        expected: parsed.hash,
+        actual,
+        context,
+        ...(candidates.length > 1 ? { ambiguousLines: candidates } : {}),
+      },
     )
   }
   return parsed.line
@@ -563,11 +611,23 @@ interface ReplaceResult {
   replacements: number
 }
 
+/** 归一化：把 CRLF 与孤立 CR 统一为 LF，用于 replace 的受控匹配。 */
+function normalizeEolForMatch(text: string): string {
+  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+}
+
 function applyExactReplaces(body: string, edits: ReplaceEdit[]): ReplaceResult {
-  let current = body
+  // CRLF↔LF 归一：磁盘文件常为 CRLF，而模型生成的 old_text 多为 LF，
+  // 二者逐字节匹配必然失配。仅在文件含 CRLF 时对匹配与替换统一归一，
+  // 替换后再还原行尾，保证可逆且不误伤内容。
+  const crlf = body.includes('\r\n')
+  const workingBody = crlf ? normalizeEolForMatch(body) : body
+  let current = workingBody
   let replacements = 0
   for (const edit of edits) {
-    const matches = current.split(edit.oldText).length - 1
+    const oldText = crlf ? normalizeEolForMatch(edit.oldText) : edit.oldText
+    const newText = crlf ? normalizeEolForMatch(edit.newText) : edit.newText
+    const matches = current.split(oldText).length - 1
     if (matches === 0) {
       fail(
         'HASHLINE_TEXT_NOT_FOUND',
@@ -583,11 +643,12 @@ function applyExactReplaces(body: string, edits: ReplaceEdit[]): ReplaceResult {
     }
     const count = edit.all ? matches : 1
     current = edit.all
-      ? current.split(edit.oldText).join(edit.newText)
-      : current.replace(edit.oldText, edit.newText)
+      ? current.split(oldText).join(newText)
+      : current.replace(oldText, newText)
     replacements += count
   }
-  return { body: current, replacements }
+  const resultBody = crlf ? current.replace(/\n/g, '\r\n') : current
+  return { body: resultBody, replacements }
 }
 
 export function firstChangedLine(before: string, after: string): number | null {

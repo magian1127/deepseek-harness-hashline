@@ -1,6 +1,8 @@
 import { isAbsolute, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { loadSchemastery } from './profile-modules.js'
+
 import {
   DEFAULT_CONTEXT_LINES,
   DEFAULT_HASH_LENGTH,
@@ -20,20 +22,33 @@ import {
   type TextLine,
 } from './core.js'
 
-import z from '@deepseek-ai/schemastery'
-
 export const name = 'dsh-hashline'
 export const inject = ['fs', 'tools', 'systemPrompt', 'settings', 'agents'] as const
 
-export const Config = z.object({
-  enabled: z.boolean().default(true),
-  replaceBuiltinEdit: z.boolean().default(false),
-  hashLength: z.number().step(1).min(3).max(16).default(DEFAULT_HASH_LENGTH),
-  readLimit: z.number().step(1).min(1).default(DEFAULT_READ_LIMIT),
-  maxLineLength: z.number().step(1).min(1).default(DEFAULT_MAX_LINE_LENGTH),
-  contextLines: z.number().step(1).min(0).max(20).default(DEFAULT_CONTEXT_LINES),
-  promptGuidance: z.boolean().default(true),
-})
+interface SchemaField {
+  default(value: unknown): SchemaField
+  step(value: number): SchemaField
+  min(value: number): SchemaField
+  max(value: number): SchemaField
+}
+
+interface SchemaFactory {
+  object(shape: Record<string, unknown>): unknown
+  boolean(): SchemaField
+  number(): SchemaField
+}
+
+export function createConfigSchema(z: SchemaFactory): unknown {
+  return z.object({
+    enabled: z.boolean().default(true),
+    replaceBuiltinEdit: z.boolean().default(false),
+    hashLength: z.number().step(1).min(3).max(16).default(DEFAULT_HASH_LENGTH),
+    readLimit: z.number().step(1).min(1).default(DEFAULT_READ_LIMIT),
+    maxLineLength: z.number().step(1).min(1).default(DEFAULT_MAX_LINE_LENGTH),
+    contextLines: z.number().step(1).min(0).max(20).default(DEFAULT_CONTEXT_LINES),
+    promptGuidance: z.boolean().default(true),
+  })
+}
 
 const SETTINGS_NAMESPACE = 'hashline'
 
@@ -917,11 +932,22 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
   ctx.inject(['hmr'], (hotContext) => installHostHotReload(hotContext as DshContext))
   const baseConfig = resolveConfig(config)
   const sandbox = createSandboxController(ctx)
-  const settings = ctx.settings.register(SETTINGS_NAMESPACE, Config, {
-    base: baseConfig as unknown as Record<string, unknown>,
-    applies: 'live',
-    exposeToClients: true,
-  })
+
+  // Config schema 从 profile 解析 schemastery 构造（与主进程同一实例）。
+  // profile 不可用时降级：不注册 settings UI，工具按传入配置工作。
+  const schemaFactory = loadSchemastery() as SchemaFactory | null
+  const Config = schemaFactory === null ? undefined : createConfigSchema(schemaFactory)
+  let settings: SettingsScope | undefined
+  if (Config !== undefined) {
+    settings = ctx.settings.register(SETTINGS_NAMESPACE, Config, {
+      base: baseConfig as unknown as Record<string, unknown>,
+      applies: 'live',
+      exposeToClients: true,
+    })
+  } else {
+    ctx.logger?.warn?.('dsh-hashline: schemastery unavailable from the profile; settings UI disabled')
+  }
+
   const globalDisposers: Array<() => void> = []
   const replacementDisposers = new Map<Agent, () => void>()
   let current: ResolvedConfig = baseConfig
@@ -1020,9 +1046,11 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
   )
   ctx.effect(
     () =>
-      settings.watch((next) => {
-        if (!stopped) refresh(next)
-      }),
+      settings === undefined
+        ? undefined
+        : settings.watch((next) => {
+            if (!stopped) refresh(next)
+          }),
     'dsh-hashline: settings watch',
   )
   ctx.on('agent/created', (payload: unknown) => {
@@ -1035,5 +1063,5 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
     replacementDisposers.delete(agent)
   })
 
-  refresh(settings.get())
+  refresh((settings === undefined ? baseConfig : settings.get()) as Record<string, unknown>)
 }

@@ -16,7 +16,7 @@ stale read，并把多处修改作为一个原子请求处理。它不判断代�
 - 替换前确认该智能体的 `read`、`edit`、`hashline_read`、`hashline_edit` 均可见，避免绕过配置限制；同层重名时保留已有定义并回滚整组替换；
 - 不修改或卸载 `tool-fs`；
 - V1 不做 symbol、AST、fuzzy matching、grep 锚点或上下文卫生跟踪；
-- `replace` 是严格精确匹配，不做近似匹配；
+- `replace` 是严格精确匹配，不做近似匹配；仅对 CRLF↔LF 做可逆归一（见「精确替换」），不做空白折叠。
 - 新建文件和全量重写不属于本插件。
 
 ## 锚点
@@ -27,6 +27,10 @@ BOM 作为文件元数据单独保存，不进入首行哈希。这样首行显�
 
 行号和短哈希联合定位。短哈希不是全局标识，也不能消除碰撞；它主要用于低成本 stale-read
 检测。需要降低碰撞概率时可提高 `hashLength`，代价是每行输出增加 token。
+
+当锚点行号因先前编辑而漂移（stale read）时，若全文件里恰有一行内容哈希与锚点哈希一致，
+则自动重定位到该行；0 个或 2 个以上候选仍按 stale-read 拒绝并回显上下文。这样把「改完
+未重读」的常见失误变成静默自愈，同时保留对多候选歧义的保守拒绝。
 
 ## 文本模型
 
@@ -50,6 +54,13 @@ BOM 作为文件元数据单独保存，不进入首行哈希。这样首行显�
 - 同一锚点允许多个 `insert_after`，并保持请求数组顺序；
 - 编辑从高行号向低行号应用，避免低位修改改变高位索引；
 - 锚定编辑和精确 `replace` 不能混用，避免两套定位语义相互依赖。
+
+## 精确替换
+
+`replace` 变体对 `old_text` 做严格精确匹配，但仅做一项可逆归一：当文件为 CRLF 时，把
+`old_text` / `new_text` 与文件正文统一归一到 LF 后再匹配替换，替换完成后整体还原为 CRLF。
+它不做行尾空白裁剪、连续空白折叠或任何模糊匹配，因为那些操作会使匹配坐标不可逆，
+破坏「写对位置」的安全前提。
 
 ## DSH 集成
 
@@ -79,15 +90,15 @@ Web client 通过 `settingsScope.bind({ namespace: 'hashline' })` 读写同一 H
 `settings.plugin.item` keyed slot 以 `key: 'hashline'` 注册卡片。它不直接访问文件、不使用
 `localStorage`，也不定义自有网络协议。
 
-`HashlineError` 继承宿主的 `HarnessError`，让 `HASHLINE_*` 和映射后的 `FS_*` code 进入结构化 ToolResult，供模型重试、UI 和自动化按 code 分支。普通安装通过 profile fallback 解析 peer；源码 `link:` 安装用 `setup:link` 把同一 DSH checkout 的 peer junction 暴露给源码目录，避免加载第二份 `dsh-llm`。
+`HashlineError` 继承宿主的 `HarnessError`，让 `HASHLINE_*` 和映射后的 `FS_*` code 进入结构化 ToolResult，供模型重试、UI 和自动化按 code 分支。`HarnessError` 经 `src/profile-modules.ts` 从 profile 解析加载，与主进程使用同一实例；profile 不可用时降级为普通 `Error`，避免加载第二份 `dsh-llm`。
 
 ## 包形态
 
 实现源码全部位于 `src/`，采用纯 TypeScript 构建：`tsc` 将 Host/core 生成纯 ESM JavaScript
 与声明文件，`tsdown` 将 `src/client.ts` 生成按 DSH client module 约定交付的经典
 `__ModuleLoader__` bundle。发布包消费 `lib/` 产物，不要求安装时再转译。运行时 peer
-`@deepseek-ai/dsh-llm` 和 `@deepseek-ai/schemastery` 在 `file:` 安装中由 DSH profile 模块回退提供，在
-`link:` 开发安装中由 `setup:link` 建立的 junction 提供。标准安装命令把 `cordis.patch.yml` 作为 profile
+`@deepseek-ai/dsh-llm` 和 `@deepseek-ai/schemastery` 由 `src/profile-modules.ts` 从当前 profile 解析加载，`file:` 与
+`link:` 安装同路径，不再需要 junction。标准安装命令把 `cordis.patch.yml` 作为 profile
 bundle 层加入，并从 package manifest 发现 client bundle；不提供自定义热安装 CLI，避免复制与核心编辑
 能力无关的 profile 监督逻辑。
 

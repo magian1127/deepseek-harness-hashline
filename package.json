@@ -1,8 +1,19 @@
 {
   "name": "deepseek-harness-hashline",
   "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "description": "Hash-anchored UTF-8 file reading and atomic editing tools for DeepSeek Harness",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magian1127/deepseek-harness-hashline.git"
+  },
+  "homepage": "https://github.com/magian1127/deepseek-harness-hashline#readme",
+  "bugs": {
+    "url": "https://github.com/magian1127/deepseek-harness-hashline/issues"
+  },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
   "exports": {
@@ -24,21 +35,18 @@
   "files": [
     "lib",
     "docs",
-    "scripts/setup-linked-install.mjs",
     "cordis.patch.yml",
     "README.md",
+    "README.en.md",
     "LICENSE"
   ],
   "scripts": {
-    "setup:link": "node scripts/setup-linked-install.mjs",
     "build": "npm run build:host && npm run build:client",
     "build:host": "tsc --project tsconfig.json",
     "build:client": "tsc --project tsconfig.client.json && tsdown --config tsdown.config.ts",
-    "check:syntax": "node --check lib/core.js && node --check lib/index.js && node --check lib/runtime-entry.js && node --check lib/client.js && node --check scripts/setup-linked-install.mjs && node --check test/setup.mjs && node --check test/register-peer.mjs && node --check test/core.test.mjs && node --check test/plugin.test.mjs && node --check test/client.test.mjs",
+    "check:syntax": "node --check lib/core.js && node --check lib/index.js && node --check lib/runtime-entry.js && node --check lib/client.js && node --check test/core.test.mjs && node --check test/plugin.test.mjs && node --check test/client.test.mjs",
     "check": "npm run build && npm run check:syntax",
-    "test:setup": "node test/setup.mjs",
-    "pretest": "node test/setup.mjs",
-    "test": "npm run build && node --import ./test/register-peer.mjs --test test/core.test.mjs test/plugin.test.mjs test/client.test.mjs",
+    "test": "npm run build && node --test test/core.test.mjs test/plugin.test.mjs test/client.test.mjs",
     "prepack": "npm run check && npm test"
   },
   "keywords": [
@@ -52,10 +60,6 @@
   "license": "MIT",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
-  },
-  "peerDependencies": {
-    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.5 <0.2.0",
-    "@deepseek-ai/schemastery": "^3.18.1"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",

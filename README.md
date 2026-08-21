@@ -1,5 +1,7 @@
 # deepseek-harness-hashline
 
+[中文](README.md) · [English](README.en.md)
+
 > ⚠️ **测试中（experimental）**
 >
 > **当前仍处于测试阶段，请勿用于正式项目。** 使用本插件所带来的一切风险由使用者自行承担。
@@ -26,11 +28,11 @@ CRLF/LF 或空白漂移时的机械可靠性问题。
 | --- | --- |
 | `LINE:HASH` 读取 | `LINE:HASH\|内容` 格式，默认 4 位十六进制 SHA-256 前缀，哈希覆盖完整行和真实行尾 |
 | 三种锚定编辑 | `set_line`、`replace_lines`、`insert_after` |
-| 精确替换逃生舱 | `replace` 严格精确匹配，默认要求唯一匹配 |
+| 精确替换逃生舱 | `replace` 严格精确匹配（CRLF↔LF 自动归一），默认要求唯一匹配 |
 | 原子批量编辑 | 一次调用全部锚点先校验、重叠先拒绝，再原子写入 |
 | 版本 CAS 保护 | 使用 DSH 文件版本防止校验后到写入前的并发覆盖 |
 | 文本保真 | 保留 UTF-8 BOM、LF/CRLF 和文件末尾是否有换行 |
-| 失效恢复 | 锚点失效时返回附近当前行和新锚点 |
+| 失效恢复 | 唯一哈希匹配自动重定位；否则返回附近当前行，坏锚点报错回显真实锚点 |
 | 可逆替换 | 开启“替换内置读写”后，Agent scoped 覆盖可逆并随 Cordis Fiber 清理 |
 
 ## 环境要求
@@ -54,10 +56,9 @@ npm run build
 dsh plugin --profile web add "file:<绝对路径>/deepseek-harness-hashline"
 ```
 
-持续开发使用 `link:`，先建立本地 DSH peer junction（见 `docs/development.md`）：
+持续开发使用 `link:` 直接安装（新版运行时从 profile 解析 DSH peer，无需本地 junction）：
 
 ```powershell
-npm run setup:link -- "<绝对路径到DSH源码>/deepseek-harness"
 dsh plugin --profile web add "link:<绝对路径>/deepseek-harness-hashline"
 ```
 

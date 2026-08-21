@@ -288,6 +288,10 @@ FakesAssemblies/
 # Node.js Tools for Visual Studio
 .ntvs_analysis.dat
 node_modules/
+# 测试用的 DSH peer 假包（schemastery / dsh-llm 最小替身）需随仓库提交，
+# 以便干净 clone 后可复现测试；不安装真实依赖。
+!test/fixtures/dsh-home/profiles/web/node_modules/
+!test/fixtures/dsh-home/profiles/web/node_modules/**
 
 # TypeScript build output
 lib/

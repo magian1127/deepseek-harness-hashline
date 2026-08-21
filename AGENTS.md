@@ -22,7 +22,6 @@
 任何行为变更都应同步测试与 README。提交前执行：
 
 ```powershell
-npm run test:setup
 npm run check
 npm test
 npm pack --dry-run --json

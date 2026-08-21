@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { HarnessError } from '@deepseek-ai/dsh-llm'
+import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
 
-import { Config, apply } from '../lib/index.js'
+// 用 fixtures 假 profile 隔离 DSH 运行时模块（schemastery/dsh-llm），
+// 必须在 import 库模块之前设置。
+process.env.DSH_HOME = fileURLToPath(new URL('./fixtures/dsh-home', import.meta.url))
+
+const require = createRequire(import.meta.url)
+const { HarnessError } = require('./fixtures/dsh-home/profiles/web/node_modules/@deepseek-ai/dsh-llm/index.cjs')
+
+const { apply } = await import('../lib/index.js')
 
 function codedError(code, message) {
   const error = new Error(message)
@@ -315,9 +323,9 @@ test('注册显式暴露的 Hashline 持久设置命名空间', () => {
   assert.equal(registration.namespace, 'hashline')
   assert.equal(registration.options.exposeToClients, true)
   assert.equal(registration.options.applies, 'live')
-  assert.deepEqual(registration.options.base, Config({}))
-  assert.equal(Config({ replaceBuiltinEdit: true }).replaceBuiltinEdit, true)
-  assert.throws(() => Config({ hashLength: 2 }))
+  assert.deepEqual(registration.options.base, registration.schema({}))
+  assert.equal(registration.schema({ replaceBuiltinEdit: true }).replaceBuiltinEdit, true)
+  assert.throws(() => registration.schema({ hashLength: 2 }))
 })
 
 test('全局开关实时卸载并恢复工具和提示词，但保留设置入口', () => {

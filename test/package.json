@@ -1,9 +1,0 @@
-{
-  "name": "deepseek-harness-hashline-test-peer",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
-    "@deepseek-ai/schemastery": "^3.18.1"
-  }
-}
