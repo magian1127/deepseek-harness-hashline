@@ -9,7 +9,7 @@ const config: UserConfig = {
   dts: false,
   sourcemap: false,
   clean: false,
-  deps: { neverBundle: ['react'] },
+  deps: { neverBundle: ['react', '@deepseek-ai/dsh-client-ui-primitives'] },
   outputOptions: {
     entryFileNames: 'client.js',
     banner: "window.__ModuleLoader__.load({ id: 'deepseek-harness-hashline', factory: (require) => {",

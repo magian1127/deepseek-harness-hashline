@@ -12,6 +12,12 @@ stale read，并把多处修改作为一个原子请求处理。它不判断代�
 ## 工具边界
 
 - 始终注册全局 `hashline_read` / `hashline_edit`，默认不覆盖内置工具；
+- `hashline_edit` 接受两种互斥输入：原版风格（`old_string` / `new_string` / `replace_all`，转换为内部
+  `replace` 计划）与 Hashline 风格（`edits` 数组）；两种输入走同一条稳定读取、版本 CAS 与写前验证路径。
+  参数 schema 为**平面可选 object**（根节点 `type: "object"`，`file_path` 必填，其余可选）：真实运行环境
+  的模型路由拒绝无 `type` 的根级 oneOf 节点（实测 `Invalid schema for function 'hashline_edit' ...
+  got 'type: null'`），互斥与必填由 `normalizeEditRequest` 在 execute 内校验，`edits.items` 的四变体
+  互斥由 `parseEditEntries` 运行时校验，schema 层只保留类型信息；
 - `replaceBuiltinEdit` 显式开启时，只在具体智能体的自身作用域注册哈希锚点 `read` 与 `edit`，可逆遮蔽其继承的原工具；
 - 替换前确认该智能体的 `read`、`edit`、`hashline_read`、`hashline_edit` 均可见，避免绕过配置限制；同层重名时保留已有定义并回滚整组替换；
 - 不修改或卸载 `tool-fs`；
@@ -57,8 +63,8 @@ BOM 作为文件元数据单独保存，不进入首行哈希。这样首行显�
 
 ## 精确替换
 
-`replace` 变体对 `old_text` 做严格精确匹配，但仅做一项可逆归一：当文件为 CRLF 时，把
-`old_text` / `new_text` 与文件正文统一归一到 LF 后再匹配替换，替换完成后整体还原为 CRLF。
+`replace` 变体对 `old_text` 做严格精确匹配。匹配阶段把 CRLF/LF 映射到统一 LF 视图，但同时保留归一化位置到原文边界的映射；
+写回仅替换命中区间，并沿用该区间的行尾风格，因此 mixed EOL 文件中未触及的 LF/CRLF 字节保持不变。
 它不做行尾空白裁剪、连续空白折叠或任何模糊匹配，因为那些操作会使匹配坐标不可逆，
 破坏「写对位置」的安全前提。
 
@@ -92,6 +98,34 @@ Web client 通过 `settingsScope.bind({ namespace: 'hashline' })` 读写同一 H
 
 `HashlineError` 继承宿主的 `HarnessError`，让 `HASHLINE_*` 和映射后的 `FS_*` code 进入结构化 ToolResult，供模型重试、UI 和自动化按 code 分支。`HarnessError` 经 `src/profile-modules.ts` 从 profile 解析加载，与主进程使用同一实例；profile 不可用时降级为普通 `Error`，避免加载第二份 `dsh-llm`。
 
+## 展示分层
+
+模型结果与 UI 展示分离：`src/core.ts` 只负责文本模型、锚点解析、计划与写前验证；`src/presentation.ts`
+是纯展示逻辑（读取 envelope、紧凑 diff hunks、回放 meta 窄化），只接收普通字符串与路径，不接触
+React、ToolResult 或 DSH 运行时实例。
+
+- `hashline_read` 的模型文本是 DSH 原生读取 envelope（`<path>/<type>/<content>`），内容行使用
+  `LINE|HASH  内容`，并在 footer 报告 `eol` / `bom`；`output.presentationMeta` 投影独立的
+  `{ number, hash, text }` 叶字段、路径、窗口与语言提示。`presentResult` 在 meta 与 envelope 均合法时
+  返回 `card: 'read'`，并把 envelope-stripped body 作为 fallback content。
+- Web Client 只为 `hashline_read`（以及显式替换后的 `read`）注册 keyed toolview。该 toolview 把
+  `{ number, hash, text }` 映射为原生 `ReadBlock` 的 `{ number: "LINE|HASH", text }`：完整
+  `LINE|HASH` 因而落入官方 gutter span，继承灰色、`aria-hidden` 与 `user-select: none`；纯 `text`
+  仍由原生高亮器、复制按钮和折叠逻辑处理。这里利用的是 React children 的运行时能力，不修改 DSH 源码。
+- `hashline_edit` 的 canonical value 增加可选内部字段 `presentation: { diffs }`：写入成功后立即用
+  实际写入前后的文本计算紧凑 hunks（展示层把 CRLF 归一到 LF、忽略 BOM、丢弃 unified diff 的缺尾换行
+  标记），并按 hunk 的原始 `oldStart/newStart` 范围附带逐行 `oldHashes/newHashes`；哈希仍从真实行正文加真实行尾计算，不从 LF 归一后的 diff 文本反推。它不保存完整 before/after；`output.presentationMeta` 只投影 `{ diffs }` 持久化，`presentResult`
+  从 meta 还原 `card: 'diff'`。每个 hunk 使用调用方的 `file_path`，不把后端解析后的绝对 `displayPath` 暴露给卡片；diff 计算只影响展示，实际写入仍走 `core.ts` 文本模型。
+- 原生 `read` / `edit` 的展示语义：`presentCall` 对原版风格与单条 `edits[].replace` 显示 pending diff
+  （参数自带 old/new）；锚点编辑没有旧文本可读，保持通用编辑卡，不伪造 diff。
+- 所有展示都可失败回退：错误、无变化、过期锚点、stale version、畸形回放 meta 或 envelope 不匹配
+  最终都由宿主渲染普通文本结果。`presentationMeta` 本身始终返回 lossless JSON（无变化为 `{ diffs: [] }`），
+  `presentResult` 再对空/畸形数据返回 `undefined`，避免成功调用被 ToolRuntime 改写为输出错误。
+- `hashline_read` 的 keyed toolview 复刻最小折叠行 chrome，并直接嵌入公开导出的原生 `ReadBlock`；不复制
+  `ReadBlock` 的私有实现或 CSS。`hashline_edit` / 显式替换后的 `edit` 复用同一折叠行 chrome，并以 React inline style 组合原生 diff 的表面、红绿语义、折叠、统计和复制行为；由于公开 `DiffBlock` 没有逐行 gutter API，编辑行由插件显式拆成不可选且 `aria-hidden` 的 `-|HASH` / `+|HASH` gutter 与可选正文。复制器只序列化路径、原生 `- `/`+ ` 和正文，不把哈希 chrome 写入剪贴板。
+- 折叠行与编辑 diff 的局部样式不把动态 Cordis 环境的 `styles` Builtin 误声明为客户端 Service 硬依赖；否则 loader 会永久等待不存在的 `styles` Service 并阻断 Web boot。
+- 注册 `read` / `edit` 键会阴影 shipped toolview，但仅在 `enabled && replaceBuiltinEdit` 时动态注册；DSH keyed Slot 的最低 live priority 胜出，因此 Hashline 使用 `priority: -100` 覆盖 shipped 的默认 `0`，而不是在同一 priority 制造注册冲突。默认只拥有 `hashline_read` / `hashline_edit`，两种命名各自复用同一 Hashline 行组件；注销阴影贡献后 shipped toolview 自动恢复。
+
 ## 包形态
 
 实现源码全部位于 `src/`，采用纯 TypeScript 构建：`tsc` 将 Host/core 生成纯 ESM JavaScript
@@ -108,7 +142,7 @@ bundle 层加入，并从 package manifest 发现 client bundle；不提供自�
 
 - `grep` 输出可编辑锚点；
 - symbol 级替换；
-- 结构化 diff 和专用 Tool card；
 - 大文件流式锚定读取；
 - context hygiene 元数据；
-- 专用的 Hashline Tool 结果卡片。
+- 默认 `hashline_*` 名称的客户端 keyed 折叠行（当前只复用原生展开卡与结果状态；若公开 UI
+  primitives 足以稳定复用原生行，再单独评估维护成本）。

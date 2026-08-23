@@ -21,6 +21,7 @@
     "src/ambient.d.ts",
     "src/core.ts",
     "src/index.ts",
+    "src/presentation.ts",
     "src/runtime-entry.ts"
   ]
 }

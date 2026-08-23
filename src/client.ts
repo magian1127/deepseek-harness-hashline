@@ -1,4 +1,5 @@
 import React from 'react'
+import { DisclosureRow, ReadBlock, StateDot, writeClipboard } from '@deepseek-ai/dsh-client-ui-primitives'
 
 const h = React.createElement
 
@@ -115,7 +116,7 @@ const responsiveCss = [
   '}',
 ].join('\n')
 
-const styles = {
+const uiStyles = {
   card: {
     listStyle: 'none',
     border: '1px solid var(--dsw-alias-border-l2)',
@@ -212,6 +213,42 @@ const styles = {
     lineHeight: 1.5,
     cursor: 'pointer',
   },
+  toolRow: { width: '100%', minWidth: 0 },
+  toolSep: { flex: 'none', width: 2, height: 2, margin: '0 8px', borderRadius: 1, background: 'var(--dsw-alias-label-caption)' },
+  toolLink: {
+    flex: 'auto', minWidth: 0, overflow: 'hidden', padding: 0, border: 0, background: 'none',
+    color: 'var(--dsw-alias-label-secondary)', font: 'inherit', fontSize: 14, lineHeight: '24px',
+    textAlign: 'left', textDecoration: 'underline', textDecorationColor: 'var(--dsw-alias-label-quaternary)',
+    textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer',
+  },
+  readBody: { margin: '4px 0 4px 4px' },
+  diffBody: {
+    position: 'relative', margin: '4px 0 4px 4px', borderRadius: 12,
+    color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-markdown-code-block)',
+  },
+  diffCopy: {
+    position: 'absolute', top: 8, right: 12, zIndex: 1, padding: 0, margin: 0, border: 0,
+    background: 'transparent', color: 'var(--dsw-alias-label-secondary)',
+    font: 'var(--dsw-font-xs-13)', cursor: 'pointer',
+  },
+  diffScroll: { padding: '12px 14px', overflowX: 'auto', overflowY: 'hidden', font: 'var(--dsw-font-markdown-code-block)' },
+  diffLine: { display: 'flex', minHeight: 22, lineHeight: '22px', whiteSpace: 'pre' },
+  diffPath: { display: 'block', minHeight: 22, lineHeight: '22px', paddingRight: 56, fontWeight: 600, whiteSpace: 'pre' },
+  diffGap: { display: 'block', minHeight: 22, lineHeight: '22px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'pre' },
+  diffGutter: { flex: 'none', userSelect: 'none', color: 'var(--dsw-alias-label-tertiary)' },
+  diffDelContent: { flex: 'none', color: 'var(--dsw-alias-state-error-primary)' },
+  diffAddContent: { flex: 'none', color: 'var(--dsw-alias-state-success-primary)' },
+  diffExpand: {
+    display: 'block', width: '100%', padding: 0, border: 0, background: 'transparent',
+    color: 'var(--dsw-alias-label-tertiary)', font: 'inherit', textAlign: 'left', cursor: 'pointer',
+  },
+  diffFooter: { padding: '0 14px 12px', color: 'var(--dsw-alias-label-tertiary)', font: 'var(--dsw-font-markdown-code-block)' },
+  toolInspect: {
+    alignSelf: 'flex-start', margin: '4px 0 2px 4px', padding: '2px 8px',
+    border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 999,
+    background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-secondary)',
+    fontSize: 11, lineHeight: '16px', cursor: 'pointer',
+  },
   primaryButton: {
     appearance: 'none',
     border: '1px solid transparent',
@@ -271,33 +308,33 @@ function controlDisabledStyle(disabled: boolean): { opacity: number; cursor: str
 
 function createCard(scope: any, t: (key: string) => string): () => any {
   function FieldIdentity(props: { overridden: boolean }) {
-    return h('span', { style: styles.override, 'data-hashline-override': '' }, props.overridden ? t('overridden') : t('inherited'))
+    return h('span', { style: uiStyles.override, 'data-hashline-override': '' }, props.overridden ? t('overridden') : t('inherited'))
   }
 
   function ToggleRow(props: { field: string; value: boolean; disabled: boolean; overridden: boolean; onChange: (next: boolean) => void }) {
-    return h('label', { style: styles.row, 'data-hashline-row': '' },
-      h('span', { style: styles.rowText },
-        h('span', { style: styles.labelLine, 'data-hashline-label-line': '' },
-          h('span', { style: styles.label }, t(props.field)),
+    return h('label', { style: uiStyles.row, 'data-hashline-row': '' },
+      h('span', { style: uiStyles.rowText },
+        h('span', { style: uiStyles.labelLine, 'data-hashline-label-line': '' },
+          h('span', { style: uiStyles.label }, t(props.field)),
           h(FieldIdentity, { overridden: props.overridden })),
-        h('span', { style: styles.hint, 'data-hashline-hint': '' }, t(props.field + 'Desc'))),
+        h('span', { style: uiStyles.hint, 'data-hashline-hint': '' }, t(props.field + 'Desc'))),
       h('input', {
         type: 'checkbox',
         role: 'switch',
         checked: props.value,
         disabled: props.disabled,
         'aria-label': t(props.field),
-        style: Object.assign({}, styles.checkbox, controlDisabledStyle(props.disabled)),
+        style: Object.assign({}, uiStyles.checkbox, controlDisabledStyle(props.disabled)),
         onChange: function (event: { target: { checked: boolean } }) { props.onChange(event.target.checked) },
       }))
   }
 
   function NumberField(props: { spec: { key: string; min?: number; max?: number }; value: number; disabled: boolean; overridden: boolean; onChange: (next: number | '') => void }) {
-    return h('label', { style: styles.numberField },
-      h('span', { style: styles.labelLine, 'data-hashline-label-line': '' },
-        h('span', { style: styles.label }, t(props.spec.key)),
+    return h('label', { style: uiStyles.numberField },
+      h('span', { style: uiStyles.labelLine, 'data-hashline-label-line': '' },
+        h('span', { style: uiStyles.label }, t(props.spec.key)),
         h(FieldIdentity, { overridden: props.overridden })),
-      h('span', { style: styles.hint, 'data-hashline-hint': '' }, t(props.spec.key + 'Desc')),
+      h('span', { style: uiStyles.hint, 'data-hashline-hint': '' }, t(props.spec.key + 'Desc')),
       h('input', {
         type: 'number',
         inputMode: 'numeric',
@@ -307,7 +344,7 @@ function createCard(scope: any, t: (key: string) => string): () => any {
         value: props.value,
         disabled: props.disabled,
         'aria-label': t(props.spec.key),
-        style: Object.assign({}, styles.input, controlDisabledStyle(props.disabled)),
+        style: Object.assign({}, uiStyles.input, controlDisabledStyle(props.disabled)),
         onChange: function (event: { target: { value: string } }) {
           const raw = event.target.value
           props.onChange(raw === '' ? '' : Number(raw))
@@ -387,12 +424,12 @@ function createCard(scope: any, t: (key: string) => string): () => any {
     const headerBadge = dirty ? t('pending') : statusText
     let body
     if (snapshot.status === 'loading') {
-      body = h('p', { style: styles.status }, t('loading'))
+      body = h('p', { style: uiStyles.status }, t('loading'))
     } else if (snapshot.status !== 'ready') {
-      body = h('p', { style: styles.status }, t('unavailable'))
+      body = h('p', { style: uiStyles.status }, t('unavailable'))
     } else {
       body = h(React.Fragment, null,
-        snapshot.writable ? null : h('p', { style: styles.status }, t('readOnly')),
+        snapshot.writable ? null : h('p', { style: uiStyles.status }, t('readOnly')),
         h(ToggleRow, {
           field: 'enabled', value: draft.enabled, disabled: !editable,
           overridden: hasOwn(snapshot.user, 'enabled'),
@@ -408,7 +445,7 @@ function createCard(scope: any, t: (key: string) => string): () => any {
           overridden: hasOwn(snapshot.user, 'promptGuidance'),
           onChange: function (next: boolean) { change('promptGuidance', next) },
         }),
-        h('div', { style: styles.numberGrid, 'data-hashline-number-grid': '' }, NUMBER_FIELDS.map(function (spec) {
+        h('div', { style: uiStyles.numberGrid, 'data-hashline-number-grid': '' }, NUMBER_FIELDS.map(function (spec) {
           return h(NumberField, {
             key: spec.key,
             spec: spec,
@@ -418,46 +455,329 @@ function createCard(scope: any, t: (key: string) => string): () => any {
             onChange: function (next: number | '') { change(spec.key, next) },
           })
         })),
-        h('div', { style: styles.footer, 'data-hashline-footer': '' },
-          h('p', { style: styles.error }, !valid ? t('invalid') : error === '' ? '' : t('saveFailed') + error),
+        h('div', { style: uiStyles.footer, 'data-hashline-footer': '' },
+          h('p', { style: uiStyles.error }, !valid ? t('invalid') : error === '' ? '' : t('saveFailed') + error),
           h('button', {
             type: 'button',
             disabled: !editable,
-            style: Object.assign({}, styles.secondaryButton, controlDisabledStyle(!editable)),
+            style: Object.assign({}, uiStyles.secondaryButton, controlDisabledStyle(!editable)),
             onClick: restore,
           }, t('restore')),
           h('button', {
             type: 'button',
             disabled: !editable || !dirty,
-            style: Object.assign({}, styles.secondaryButton, controlDisabledStyle(!editable || !dirty)),
+            style: Object.assign({}, uiStyles.secondaryButton, controlDisabledStyle(!editable || !dirty)),
             onClick: discard,
           }, t('discard')),
           h('button', {
             type: 'button',
             disabled: !editable || !dirty || !valid,
-            style: Object.assign({}, styles.primaryButton, controlDisabledStyle(!editable || !dirty || !valid)),
+            style: Object.assign({}, uiStyles.primaryButton, controlDisabledStyle(!editable || !dirty || !valid)),
             onClick: function () { void save() },
           }, saving ? t('saving') : t('save'))))
     }
 
-    return h('li', { style: styles.card, 'data-hashline-settings': '' },
+    return h('li', { style: uiStyles.card, 'data-hashline-settings': '' },
       h('style', null, responsiveCss),
       h('button', {
         type: 'button',
         'aria-expanded': open,
-        style: styles.header,
+        style: uiStyles.header,
         'data-hashline-header': '',
         onClick: function () { setOpen(!open) },
       },
-        h('span', { style: styles.headText, 'data-hashline-head-text': '' },
-          h('span', { style: styles.name, 'data-hashline-name': '' }, t('title')),
-          h('span', { style: styles.description, 'data-hashline-description': '' }, t('description'))),
-        h('span', { style: styles.badge, 'data-hashline-badge': '' }, headerBadge),
-        h('span', { style: styles.chevron, 'data-hashline-chevron': '', 'aria-hidden': 'true' }, open ? '▾' : '▸')),
-      open ? h('div', { style: styles.body, 'data-hashline-body': '' }, body) : null)
+        h('span', { style: uiStyles.headText, 'data-hashline-head-text': '' },
+          h('span', { style: uiStyles.name, 'data-hashline-name': '' }, t('title')),
+          h('span', { style: uiStyles.description, 'data-hashline-description': '' }, t('description'))),
+        h('span', { style: uiStyles.badge, 'data-hashline-badge': '' }, headerBadge),
+        h('span', { style: uiStyles.chevron, 'data-hashline-chevron': '', 'aria-hidden': 'true' }, open ? '▾' : '▸')),
+      open ? h('div', { style: uiStyles.body, 'data-hashline-body': '' }, body) : null)
   }
 }
 
+interface HashlineReadLine {
+  number: number
+  hash: string
+  text: string
+}
+
+interface HashlineReadView {
+  card: 'read'
+  path: string
+  offset: number
+  lines: HashlineReadLine[]
+  totalLines: number
+  lang?: string
+}
+
+const HASHLINE_RE = /^[0-9a-f]{3,16}$/u
+
+function normalizeHashlineReadLine(value: unknown): HashlineReadLine | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const line = value as Record<string, unknown>
+  if (typeof line.number !== 'number' || !Number.isInteger(line.number) || line.number < 1) return undefined
+  if (typeof line.text !== 'string') return undefined
+  if (typeof line.hash === 'string' && HASHLINE_RE.test(line.hash)) {
+    return { number: line.number, hash: line.hash, text: line.text }
+  }
+  // 兼容 Host 尚未热重载的早期投影：`text` 曾为 `|HASH  正文`。
+  // 只接受严格前缀，避免误把普通内置 read 的正文当成 Hashline 行。
+  const legacy = /^\|([0-9a-f]+)  ([\s\S]*)$/u.exec(line.text)
+  if (legacy === null || !HASHLINE_RE.test(legacy[1])) return undefined
+  return { number: line.number, hash: legacy[1], text: legacy[2] }
+}
+
+function hashlineReadView(block: any): HashlineReadView | undefined {
+  if (block === null || typeof block !== 'object' || block.kind !== 'tool-result') return undefined
+  const view = block.resultView
+  if (view === null || typeof view !== 'object' || view.card !== 'read') return undefined
+  if (typeof view.path !== 'string' || !Number.isInteger(view.offset) || view.offset < 1) return undefined
+  if (!Number.isInteger(view.totalLines) || view.totalLines < 0 || !Array.isArray(view.lines)) return undefined
+  if (view.lang !== undefined && typeof view.lang !== 'string') return undefined
+  const lines: HashlineReadLine[] = []
+  let previousNumber = 0
+  for (const candidate of view.lines) {
+    const line = normalizeHashlineReadLine(candidate)
+    if (line === undefined || line.number <= previousNumber || line.number > view.totalLines) return undefined
+    lines.push(line)
+    previousNumber = line.number
+  }
+  if (lines.length > 0 && lines[0].number !== view.offset) return undefined
+  return {
+    card: 'read', path: view.path, offset: view.offset, lines, totalLines: view.totalLines,
+    ...(view.lang === undefined ? {} : { lang: view.lang }),
+  }
+}
+
+interface HashlineDiffHunk {
+  path: string
+  oldText: string | null
+  newText: string
+  oldHashes: string[]
+  newHashes: string[]
+}
+
+function diffLineCount(text: string | null): number {
+  return text === null || text === '' ? 0 : text.split('\n').length
+}
+
+function normalizeHashlineDiff(value: unknown): HashlineDiffHunk | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const diff = value as Record<string, unknown>
+  if (typeof diff.path !== 'string' || (diff.oldText !== null && typeof diff.oldText !== 'string') || typeof diff.newText !== 'string') return undefined
+  if (!Array.isArray(diff.oldHashes) || !Array.isArray(diff.newHashes)) return undefined
+  if (!diff.oldHashes.every(hash => typeof hash === 'string' && HASHLINE_RE.test(hash))) return undefined
+  if (!diff.newHashes.every(hash => typeof hash === 'string' && HASHLINE_RE.test(hash))) return undefined
+  if (diff.oldHashes.length !== diffLineCount(diff.oldText as string | null)) return undefined
+  if (diff.newHashes.length !== diffLineCount(diff.newText)) return undefined
+  return {
+    path: diff.path,
+    oldText: diff.oldText as string | null,
+    newText: diff.newText,
+    oldHashes: diff.oldHashes as string[],
+    newHashes: diff.newHashes as string[],
+  }
+}
+
+function hashlineDiffs(block: any): HashlineDiffHunk[] | undefined {
+  if (block === null || typeof block !== 'object' || block.kind !== 'tool-result' || block.isError === true) return undefined
+  const view = block.resultView
+  if (view === null || typeof view !== 'object' || view.card !== 'diff' || !Array.isArray(view.diffs) || view.diffs.length === 0) return undefined
+  const diffs = view.diffs.map(normalizeHashlineDiff)
+  return diffs.every((diff: HashlineDiffHunk | undefined) => diff !== undefined) ? diffs as HashlineDiffHunk[] : undefined
+}
+
+type HashlineDiffRow =
+  | { kind: 'path'; text: string }
+  | { kind: 'gap'; text: string }
+  | { kind: 'del'; sign: '-'; hash: string; text: string }
+  | { kind: 'add'; sign: '+'; hash: string; text: string }
+
+function textLines(text: string | null): string[] {
+  return text === null || text === '' ? [] : text.split('\n')
+}
+
+function buildHashlineDiffRows(diffs: HashlineDiffHunk[]): {
+  rows: HashlineDiffRow[]
+  added: number
+  removed: number
+  files: number
+} {
+  const rows: HashlineDiffRow[] = []
+  const paths = new Set<string>()
+  let added = 0
+  let removed = 0
+  let previousPath: string | undefined
+  for (const diff of diffs) {
+    paths.add(diff.path)
+    rows.push(diff.path === previousPath ? { kind: 'gap', text: '⋯' } : { kind: 'path', text: diff.path })
+    previousPath = diff.path
+    textLines(diff.oldText).forEach(function (text, index) {
+      rows.push({ kind: 'del', sign: '-', hash: diff.oldHashes[index], text })
+      removed += 1
+    })
+    textLines(diff.newText).forEach(function (text, index) {
+      rows.push({ kind: 'add', sign: '+', hash: diff.newHashes[index], text })
+      added += 1
+    })
+  }
+  return { rows, added, removed, files: paths.size }
+}
+
+function hashlineDiffCopyText(rows: HashlineDiffRow[]): string {
+  return rows.map(function (row) {
+    return row.kind === 'del' || row.kind === 'add' ? `${row.sign} ${row.text}` : row.text
+  }).join('\n')
+}
+
+function HashlineDiffBlock({ diffs, maxLines = 8 }: { diffs: HashlineDiffHunk[]; maxLines?: number }): any {
+  const model = React.useMemo(function () { return buildHashlineDiffRows(diffs) }, [diffs])
+  const [expanded, setExpanded] = React.useState(false)
+  const [copied, setCopied] = React.useState(false)
+  if (model.rows.length === 0) return null
+  const hidden = model.rows.length - maxLines
+  const capped = hidden > 0 && !expanded
+  const headLines = Math.ceil(maxLines / 2)
+  const tailLines = maxLines - headLines
+  const head = capped ? model.rows.slice(0, headLines) : model.rows
+  const tail = capped ? model.rows.slice(model.rows.length - tailLines) : []
+  const copy = function () {
+    if (copied) return
+    void writeClipboard(hashlineDiffCopyText(model.rows)).then(function (ok: boolean) {
+      if (!ok) return
+      setCopied(true)
+      window.setTimeout(function () { setCopied(false) }, 1000)
+    })
+  }
+  const renderRows = function (rows: HashlineDiffRow[], keyPrefix: string) {
+    return rows.map(function (row, index) {
+      if (row.kind === 'path') return h('div', { key: `${keyPrefix}-${index}`, style: uiStyles.diffPath }, row.text)
+      if (row.kind === 'gap') return h('div', { key: `${keyPrefix}-${index}`, style: uiStyles.diffGap }, row.text)
+      const contentStyle = row.kind === 'del' ? uiStyles.diffDelContent : uiStyles.diffAddContent
+      return h('div', { key: `${keyPrefix}-${index}`, style: uiStyles.diffLine },
+        h('span', { style: uiStyles.diffGutter, 'aria-hidden': true }, `${row.sign}|${row.hash}  `),
+        h('span', { style: contentStyle }, row.text))
+    })
+  }
+  return h('div', { style: uiStyles.diffBody, 'data-hashline-diff': '' },
+    h('button', { type: 'button', style: uiStyles.diffCopy, onClick: copy }, copied ? '复制成功' : '复制'),
+    h('div', { style: uiStyles.diffScroll },
+      renderRows(head, 'head'),
+      hidden > 0 ? h('button', {
+        type: 'button', style: uiStyles.diffExpand, 'aria-expanded': expanded,
+        'aria-label': expanded ? '收起差异' : `展开其余 ${hidden} 行差异`,
+        onClick: function () { setExpanded(!expanded) },
+      }, expanded ? '收起' : `… 其余 ${hidden} 行`) : null,
+      renderRows(tail, 'tail')),
+    h('div', { style: uiStyles.diffFooter }, `└ +${model.added} -${model.removed} · ${model.files} file${model.files === 1 ? '' : 's'}`))
+}
+function createHashlineEditRow(): (props: any) => any {
+  const h = React.createElement
+  return function HashlineEditRow(props: any): any {
+    const diffs = hashlineDiffs(props.block)
+    const [open, setOpen] = React.useState(false)
+    const path = filePathFromBlock(props.block) ?? diffs?.[0]?.path ?? props.callId ?? ''
+    const running = props.block?.kind !== 'tool-result'
+    const error = props.block?.kind === 'tool-result' && props.block.isError === true
+    const expandable = diffs !== undefined
+    const isOpen = open && expandable
+    const openPath = function (event: any) {
+      event.stopPropagation()
+      if (path !== '') props.openFile(path)
+    }
+
+    const state = running ? 'ongoing' : error ? 'error' : 'done'
+    const collapsedContent = path === '' ? null : h(React.Fragment, null,
+      h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
+      h('button', {
+        type: 'button', style: uiStyles.toolLink, onClick: openPath,
+        onKeyDown: function (event: any) { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
+      }, path))
+    const body = !isOpen || diffs === undefined ? null : h(React.Fragment, null,
+      h(HashlineDiffBlock, { diffs, maxLines: 8 }),
+      props.inspect === undefined ? null : h('button', {
+        type: 'button', style: uiStyles.toolInspect, onClick: props.inspect,
+      }, 'Inspect'))
+    return h('div', { 'data-tool': props.toolName, 'data-state': state },
+      h(DisclosureRow, {
+        style: uiStyles.toolRow,
+        icon: h(StateDot, { state }),
+        title: 'Edit',
+        open: isOpen,
+        expandable,
+        onToggle: function () { setOpen(!open) },
+        expandOnRowClick: true,
+        previewChevron: true,
+        collapsedContent,
+      }, body))
+  }
+}
+function filePathFromBlock(block: any): string | undefined {
+  const argsRaw = block?.kind === 'tool-result' ? block.call?.argsRaw : block?.argsRaw
+  if (typeof argsRaw !== 'string') return undefined
+  try {
+    const args = JSON.parse(argsRaw)
+    return typeof args?.file_path === 'string' && args.file_path !== '' ? args.file_path : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 复用官方 ReadBlock 的折叠、复制、语法高亮与全部原生样式。
+ * ReadBlock 运行时只把 `number` 当 React children/key 使用；这里专用 toolview
+ * 有意传入 `LINE|HASH` 字符串，让完整锚点进入原生灰色、aria-hidden gutter。
+ */
+function createHashlineReadRow(): (props: any) => any {
+  const h = React.createElement
+  return function HashlineReadRow(props: any): any {
+    const view = hashlineReadView(props.block)
+    const [open, setOpen] = React.useState(false)
+    const path = filePathFromBlock(props.block) ?? view?.path ?? props.callId ?? ''
+    const running = props.block?.kind !== 'tool-result'
+    const error = props.block?.kind === 'tool-result' && props.block.isError === true
+    const expandable = view !== undefined
+    const isOpen = open && expandable
+    const openPath = function (event: any) {
+      event.stopPropagation()
+      if (path !== '') props.openFile(path)
+    }
+    const lines = view?.lines.map(function (line) {
+      return { number: `${line.number}|${line.hash}`, text: line.text }
+    }) ?? []
+    const state = running ? 'ongoing' : error ? 'error' : 'done'
+    const collapsedContent = path === '' ? null : h(React.Fragment, null,
+      h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
+      h('button', {
+        type: 'button', style: uiStyles.toolLink, onClick: openPath,
+        onKeyDown: function (event: any) { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
+      }, path))
+    const body = !isOpen || view === undefined ? null : h(React.Fragment, null,
+      h(ReadBlock, {
+        style: uiStyles.readBody,
+        label: view.path,
+        lines,
+        totalLines: view.totalLines,
+        lang: view.lang,
+        maxLines: 8,
+      }),
+      props.inspect === undefined ? null : h('button', {
+        type: 'button', style: uiStyles.toolInspect, onClick: props.inspect,
+      }, 'Inspect'))
+    return h('div', { 'data-tool': props.toolName, 'data-state': state },
+      h(DisclosureRow, {
+        style: uiStyles.toolRow,
+        icon: h(StateDot, { state }),
+        title: 'Read',
+        open: isOpen,
+        expandable,
+        onToggle: function () { setOpen(!open) },
+        expandOnRowClick: true,
+        previewChevron: true,
+        collapsedContent,
+      }, body))
+  }
+}
 function apply(ctx: any): void {
   const t = ctx.locale.bind(LOCALE_NAMESPACE)
   const scope = ctx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE })
@@ -472,6 +792,40 @@ function apply(ctx: any): void {
       locale: LOCALE_NAMESPACE,
     }, Card)
   })
+  const HashlineReadRow = createHashlineReadRow()
+  const HashlineEditRow = createHashlineEditRow()
+
+  ctx.slots.inject('tool.call.toolview', function* () {
+    yield ctx.slots.register({ name: 'tool.call.toolview', key: 'hashline_read' }, HashlineReadRow)
+    yield ctx.slots.register({ name: 'tool.call.toolview', key: 'hashline_edit' }, HashlineEditRow)
+  })
+  // 只有 Host 确实用 Hashline 替换内置 read 时才接管 shipped `read-row`；
+  // 默认模式绝不遮蔽普通内置 read 的原生工具卡。
+  ctx.effect(function () {
+    let disposeBuiltins: (() => void) | undefined
+    const sync = function () {
+      const value = scope.getSnapshot().value
+      const shouldOwnBuiltins = value?.enabled === true && value?.replaceBuiltinEdit === true
+      if (shouldOwnBuiltins && disposeBuiltins === undefined) {
+        disposeBuiltins = ctx.slots.inject('tool.call.toolview', function* () {
+          // Shipped read/edit toolviews occupy priority 0. Keyed slots render the
+          // lowest live priority, so -100 shadows them without replacing their Fiber;
+          // disposing this contribution restores the shipped rows immediately.
+          yield ctx.slots.register({ name: 'tool.call.toolview', key: 'read', priority: -100 }, HashlineReadRow)
+          yield ctx.slots.register({ name: 'tool.call.toolview', key: 'edit', priority: -100 }, HashlineEditRow)
+        })
+      } else if (!shouldOwnBuiltins && disposeBuiltins !== undefined) {
+        disposeBuiltins()
+        disposeBuiltins = undefined
+      }
+    }
+    sync()
+    const unsubscribe = scope.subscribe(sync)
+    return function () {
+      unsubscribe()
+      disposeBuiltins?.()
+    }
+  }, 'dsh-hashline: scoped read/edit toolviews')
 }
 
 export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope']

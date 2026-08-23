@@ -29,7 +29,8 @@ function createReactHarness() {
         state[index] = typeof next === 'function' ? next(state[index]) : next
       }]
     },
-    useEffect() {},
+      useEffect() {},
+      useMemo(factory) { return factory() },
   }
 
   return {
@@ -56,9 +57,27 @@ function flatten(node, output = []) {
   return output
 }
 
-async function loadClientModule(React) {
+async function loadClientModule(React, primitives = {}) {
+  const defaults = {
+    DisclosureRow(props) {
+      return React.createElement('div', {
+        'data-disclosure-row': '',
+        role: props.expandable && props.expandOnRowClick ? 'button' : undefined,
+        tabIndex: props.expandable && props.expandOnRowClick ? 0 : undefined,
+        'aria-expanded': props.expandable && props.expandOnRowClick ? props.open : undefined,
+        onClick: props.expandable && props.expandOnRowClick ? props.onToggle : undefined,
+        onKeyDown: props.expandable && props.expandOnRowClick ? event => {
+          if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); props.onToggle() }
+        } : undefined,
+      }, props.icon, props.title, props.collapsedContent, props.open ? props.children : null)
+    },
+    StateDot(props) { return React.createElement('span', { 'data-state': props.state }) },
+      writeClipboard: async () => true,
+    ...primitives,
+  }
   let definition
   globalThis.window = {
+      setTimeout() {},
     __ModuleLoader__: {
       load(value) {
         definition = value
@@ -74,10 +93,11 @@ async function loadClientModule(React) {
   return {
     definition,
     exports: definition.factory((specifier) => {
-      assert.equal(specifier, 'react')
-      return React
-    }),
-  }
+        if (specifier === 'react') return React
+        if (specifier === '@deepseek-ai/dsh-client-ui-primitives') return defaults
+        assert.fail('unexpected client external: ' + specifier)
+      }),
+    }
 }
 
 test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', async () => {
@@ -151,8 +171,13 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
     },
     slots: {
       inject(name, factory) {
-        assert.equal(name, 'settings.plugin.item')
-        return factory()
+        assert.ok(name === 'settings.plugin.item' || name === 'tool.call.toolview')
+        const effect = factory()
+        if (effect !== null && typeof effect === 'object' && Symbol.iterator in effect) {
+          const disposers = [...effect]
+          return () => { for (const dispose of disposers.reverse()) dispose?.() }
+        }
+        return effect
       },
       register(options, Component) {
         slotRegistrations.push({ options, Component })
@@ -177,13 +202,17 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
   }
   assert.equal(localeRegistrations[0].dictionaries.zh.replaceBuiltinEdit, '替换内置读写')
   assert.equal(localeRegistrations[0].dictionaries.en.replaceBuiltinEdit, '替换内置读写')
-  assert.equal(slotRegistrations.length, 1)
+  assert.equal(slotRegistrations.length, 3)
   assert.deepEqual(slotRegistrations[0].options, {
     name: 'settings.plugin.item',
     key: 'hashline',
     locale: 'settings.hashline',
   })
 
+  assert.deepEqual(slotRegistrations.slice(1).map(item => item.options), [
+    { name: 'tool.call.toolview', key: 'hashline_read' },
+    { name: 'tool.call.toolview', key: 'hashline_edit' },
+  ])
   const Card = slotRegistrations[0].Component
   let tree = reactHarness.render(Card)
   assert.equal(tree.type, 'li')
@@ -226,6 +255,220 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
   assert.ok(nodes.some(node => typeof node === 'string' && node.includes('saveNotApplied')))
 })
 
+test('替换内置 toolview 使用低优先级阴影并可逆清理', async () => {
+  const reactHarness = createReactHarness()
+  const { exports } = await loadClientModule(reactHarness.React)
+  let snapshot = {
+    status: 'ready', value: { enabled: true, replaceBuiltinEdit: true },
+    base: {}, user: {}, revision: 0, writable: false, mode: 'host',
+  }
+  const listeners = new Set()
+  const registrations = []
+  const disposed = []
+  const scope = {
+    getSnapshot: () => snapshot,
+    subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+    set: async () => {}, unset: async () => {},
+  }
+  const ctx = {
+    locale: { bind: () => key => key, register: () => () => {} },
+    settingsScope: { bind: () => scope },
+    slots: {
+      inject: (_name, factory) => {
+        const effect = factory()
+        if (effect !== null && typeof effect === 'object' && Symbol.iterator in effect) {
+          const disposers = [...effect]
+          return () => { for (const dispose of disposers.reverse()) dispose?.() }
+        }
+        return effect
+      },
+      register(options, Component) {
+        registrations.push({ options, Component })
+        return () => { disposed.push(options) }
+      },
+    },
+    effect: setup => setup(),
+  }
+  exports.apply(ctx)
+  assert.deepEqual(registrations.filter(item => item.options.key === 'read' || item.options.key === 'edit').map(item => item.options), [
+    { name: 'tool.call.toolview', key: 'read', priority: -100 },
+    { name: 'tool.call.toolview', key: 'edit', priority: -100 },
+  ])
+  snapshot = { ...snapshot, value: { enabled: true, replaceBuiltinEdit: false }, revision: 1 }
+  for (const listener of listeners) listener()
+  assert.deepEqual(disposed.map(options => options.key), ['edit', 'read'])
+})
+test('Hashline 读取 toolview 复用原生 ReadBlock 并把完整 LINE|HASH 传给 gutter', async () => {
+  const reactHarness = createReactHarness()
+  let readBlockProps
+  const { exports } = await loadClientModule(reactHarness.React, {
+    ReadBlock(props) {
+      readBlockProps = props
+      return { type: 'native-read-block', props }
+    },
+  })
+  const registrations = []
+  const ctx = {
+    locale: { bind: () => key => key, register: () => () => {} },
+    settingsScope: {
+      bind: () => ({
+        getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, revision: 0, writable: false, mode: 'host' }),
+        subscribe: () => () => {}, set: async () => {}, unset: async () => {},
+      }),
+    },
+    styles: { insert: () => () => {} },
+    slots: {
+      inject: (_name, factory) => {
+        const effect = factory()
+        if (effect !== null && typeof effect === 'object' && Symbol.iterator in effect) {
+          const disposers = [...effect]
+          return () => { for (const dispose of disposers.reverse()) dispose?.() }
+        }
+        return effect
+      },
+      register(options, Component) {
+        registrations.push({ options, Component })
+        return () => {}
+      },
+    },
+    effect: setup => setup(),
+  }
+  exports.apply(ctx)
+  const ReadRow = registrations.find(item => item.options.key === 'hashline_read').Component
+  const block = {
+    kind: 'tool-result', callId: 'call-1', isError: false,
+    call: { name: 'hashline_read', argsRaw: JSON.stringify({ file_path: 'demo.ts' }) },
+    resultView: {
+      card: 'read', path: 'demo.ts', offset: 1, totalLines: 1, lang: 'ts',
+      lines: [{ number: 1, hash: 'b6a9', text: 'const alpha = 1' }],
+    },
+  }
+  let tree = reactHarness.render(() => ReadRow({
+    callId: 'call-1', toolName: 'hashline_read', block, openFile: () => {},
+  }))
+  let nodes = flatten(tree)
+  const header = nodes.find(node => node?.props?.['aria-expanded'] === false)
+  assert.ok(header)
+  header.props.onClick()
+  tree = reactHarness.render(() => ReadRow({
+    callId: 'call-1', toolName: 'hashline_read', block, openFile: () => {},
+  }))
+  assert.equal(tree.props['data-tool'], 'hashline_read')
+  assert.ok(readBlockProps)
+  assert.equal(readBlockProps.label, 'demo.ts')
+  assert.equal(readBlockProps.lang, 'ts')
+  assert.equal(readBlockProps.maxLines, 8)
+  assert.deepEqual(readBlockProps.lines, [{ number: '1|b6a9', text: 'const alpha = 1' }])
+
+  // Host 半边尚未热重载时的旧 `{ number, text: '|HASH  正文' }` 投影也要正常显示。
+  block.resultView.lines = [{ number: 1, text: '|b6a9  const alpha = 1' }]
+  readBlockProps = undefined
+  reactHarness.render(() => ReadRow({
+    callId: 'call-1', toolName: 'hashline_read', block, openFile: () => {},
+  }))
+  assert.deepEqual(readBlockProps.lines, [{ number: '1|b6a9', text: 'const alpha = 1' }])
+})
+test('Hashline 编辑 toolview 把 -|旧HASH / +|新HASH 作为灰色不可选 gutter', async () => {
+  const reactHarness = createReactHarness()
+  const clipboard = []
+  let resolveClipboard
+  const { exports } = await loadClientModule(reactHarness.React, {
+    writeClipboard: text => { clipboard.push(text); return new Promise(resolve => { resolveClipboard = resolve }) },
+  })
+  const registrations = []
+  const ctx = {
+    locale: { bind: () => key => key, register: () => () => {} },
+    settingsScope: { bind: () => ({
+      getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, revision: 0, writable: false, mode: 'host' }),
+      subscribe: () => () => {}, set: async () => {}, unset: async () => {},
+    }) },
+    slots: {
+      inject: (_name, factory) => {
+        const effect = factory()
+        if (effect !== null && typeof effect === 'object' && Symbol.iterator in effect) {
+          const disposers = [...effect]
+          return () => { for (const dispose of disposers.reverse()) dispose?.() }
+        }
+        return effect
+      },
+      register(options, Component) { registrations.push({ options, Component }); return () => {} },
+    },
+    effect: setup => setup(),
+  }
+  exports.apply(ctx)
+  const EditRow = registrations.find(item => item.options.key === 'hashline_edit').Component
+  const block = {
+    kind: 'tool-result', callId: 'edit-1', isError: false,
+    call: { name: 'hashline_edit', argsRaw: JSON.stringify({ file_path: 'demo.ts' }) },
+    resultView: { card: 'diff', title: 'Edit demo.ts', diffs: [{
+      path: 'demo.ts', oldText: 'const beta = 2', newText: 'const beta = 3',
+      oldHashes: ['ab9b'], newHashes: ['8359'],
+    }] },
+  }
+  let tree = reactHarness.render(() => EditRow({ callId: 'edit-1', toolName: 'hashline_edit', block, openFile: () => {} }))
+  let nodes = flatten(tree)
+  const header = nodes.find(node => node?.props?.['aria-expanded'] === false)
+  assert.ok(header)
+  header.props.onClick()
+  tree = reactHarness.render(() => EditRow({ callId: 'edit-1', toolName: 'hashline_edit', block, openFile: () => {} }))
+  nodes = flatten(tree)
+  assert.equal(tree.props['data-tool'], 'hashline_edit')
+  const oldGutter = nodes.find(node => node?.type === 'span' && node.props.children === '-|ab9b  ')
+  const newGutter = nodes.find(node => node?.type === 'span' && node.props.children === '+|8359  ')
+  assert.equal(oldGutter.props['aria-hidden'], true)
+  assert.equal(newGutter.props['aria-hidden'], true)
+  assert.equal(oldGutter.props.style.userSelect, 'none')
+  assert.equal(newGutter.props.style.userSelect, 'none')
+  assert.equal(oldGutter.props.style.color, 'var(--dsw-alias-label-tertiary)')
+  assert.ok(nodes.some(node => node?.type === 'span' && node.props.children === 'const beta = 2'))
+  assert.ok(nodes.some(node => node?.type === 'span' && node.props.children === 'const beta = 3'))
+  const copy = nodes.find(node => node?.type === 'button' && node.props.children === '复制')
+  copy.props.onClick()
+  assert.deepEqual(clipboard, ['demo.ts\n- const beta = 2\n+ const beta = 3'])
+  resolveClipboard(false)
+  await Promise.resolve()
+})
+test('Hashline 读取 toolview 对畸形行号回放安全回退', async () => {
+  const reactHarness = createReactHarness()
+  const { exports } = await loadClientModule(reactHarness.React, {
+    ReadBlock() { throw new Error('畸形回放不得进入 ReadBlock') },
+  })
+  const registrations = []
+  const ctx = {
+    locale: { bind: () => key => key, register: () => () => {} },
+    settingsScope: { bind: () => ({
+      getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, revision: 0, writable: false, mode: 'host' }),
+      subscribe: () => () => {}, set: async () => {}, unset: async () => {},
+    }) },
+    styles: { insert: () => () => {} },
+    slots: {
+      inject: (_name, factory) => {
+        const effect = factory()
+        if (effect !== null && typeof effect === 'object' && Symbol.iterator in effect) {
+          const disposers = [...effect]
+          return () => { for (const dispose of disposers.reverse()) dispose?.() }
+        }
+        return effect
+      },
+      register(options, Component) { registrations.push({ options, Component }); return () => {} },
+    },
+    effect: setup => setup(),
+  }
+  exports.apply(ctx)
+  const ReadRow = registrations.find(item => item.options.key === 'hashline_read').Component
+  const block = {
+    kind: 'tool-result', callId: 'call-invalid', isError: false,
+    call: { name: 'hashline_read', argsRaw: '{}' },
+    resultView: { card: 'read', path: 'bad.txt', offset: 1, totalLines: 2, lines: [
+      { number: 2, hash: 'aaaa', text: 'two' },
+      { number: 1, hash: 'bbbb', text: 'one' },
+    ] },
+  }
+  const tree = reactHarness.render(() => ReadRow({ callId: 'call-invalid', toolName: 'hashline_read', block, openFile: () => {} }))
+  const nodes = flatten(tree)
+  assert.ok(nodes.some(node => node?.props?.['data-state'] === 'done'))
+  assert.ok(!nodes.some(node => node?.props?.['aria-expanded'] !== undefined))
+})
 test('客户端配置卡片包含全局、替换、提示词和四个数值字段', async () => {
   const reactHarness = createReactHarness()
   const { exports } = await loadClientModule(reactHarness.React)

@@ -9,10 +9,11 @@
 | `src/client.ts` | 客户端 TypeScript 源码：向 `settings.plugin.item` 贡献配置卡片 |
 | `src/index.ts` | Host TypeScript 源码：`hashline_read` / `hashline_edit` 工具、设置、提示词、Agent scoped 替换、HMR |
 | `src/core.ts` | 锚点/编辑的纯逻辑 TypeScript 核心（拆分、计划、预览） |
+| `src/presentation.ts` | 展示层纯逻辑：读取 envelope、紧凑 diff hunks、回放 meta 窄化（依赖 `diff`） |
 | `src/runtime-entry.ts` | TypeScript 运行时兼容入口 |
 | `lib/` | `tsc` 与 `tsdown` 生成的可发布 JavaScript、声明和 bundle，不直接编辑 |
 | `cordis.patch.yml` | 随包发布的持久 bundle 行 |
-| `test/` | 回归测试 |
+| `test/` | 回归测试（core / presentation / plugin / client） |
 | `src/profile-modules.ts` | 运行时从 profile 解析 DSH peer（schemastery / dsh-llm），失败时降级 |
 
 ## 环境要求
@@ -56,6 +57,9 @@ dsh plugin --profile web add "link:<绝对路径>/deepseek-harness-hashline"
 （同一份 `HarnessError` 与 schemastery），`file:` 与 `link:` 安装走同一条回退路径；加载失败时降级为
 普通 `Error` 并关闭 settings UI，而不是启动失败。
 
+展示层依赖 `diff`（^9.0.0，与 DSH 原生 tool-fs 同库同上下文策略）写入本包 `dependencies`；它是纯运行时
+依赖，`npm install` 后由 Node 从本包目录解析，不依赖 profile 提供。
+
 ## TypeScript 构建
 
 仓库采用纯 TypeScript 源码构建模式：`src/` 是唯一实现来源，`lib/` 是发布产物。安装开发依赖后执行：
@@ -72,27 +76,23 @@ npm run build
 
 ## Host 热重载
 
-插件使用官方 Cordis HMR 服务精确监视构建产物 `lib/index.js` 和 `lib/core.js`。首次组合完成后，Host 源码修改并重新构建后会在线卸载旧 Fiber
+插件使用官方 Cordis HMR 服务精确监视构建产物 `lib/index.js`、`lib/core.js` 和 `lib/presentation.js`。首次组合完成后，Host 源码修改并重新构建后会在线卸载旧 Fiber
 并应用新代码，无需重启 DSH。若部署的 HMR root 已覆盖插件目录则不重复注册。
 
 `lib/client.js` 是由 `src/client.ts` 生成的 DSH client module bundle。修改客户端源码后重新执行
-`npm run build:client`；从同一 DSH checkout 运行 `pnpm run dev:web` 可自动推送 client HMR，未运行 watcher 时刷新页面即可，同样不需要重启 Host。
+`npm run build:client`。只有同一 DSH checkout 正在运行 `pnpm run dev:web` 并监视该物化 bundle 时，Client HMR 才会自动推送；`file:` 安装需先把新产物同步到 profile 物化副本，再确认 GUI boot entry 的 client revision 已变化。未运行 watcher 时仅刷新页面不会重建或同步 bundle，但同样不得为此重启 Host。
 
 插件不提供自定义热安装 CLI，不复制 `dsh-zh` 的热安装监督器；安装统一使用 `dsh plugin`。
 
-## 运行环境验证与热更新限制
+## 运行环境验证与热更新经验
 
-以下经验来自真实运行环境（DSH rev 36ef35304487）的一次完整验证，影响 Host 更新的交付路径：
+以下结论以**当前进程的实际能力**为准，不把旧 rev 或 checkout 源码当成运行事实：
 
-- 当前运行版的 Host 侧 HMR 服务整体不工作：官方 patch watcher 不生效（已知），dsh-zh 的自热重载
-  （registerConfig + partialReload）同样零触发——给其 lib/index.js 注入文件探针后修改，apply 不再被调用。
-- 热挂载（dsh-zh hotMount）依赖 @deepseek-ai/cordis-plugin-include，当前 profile 未安装该依赖，热挂载
-  静默失败；翻转 profile 双清单（dependencies + dsh.profile.bundles）只触发官方 removed（卸载旧 Fiber），
-  added（重挂）无通道处理。因此 file: 安装下 Host 代码更新需重启 DSH：先把新 lib/ 覆盖到 profile
-  物化副本，重启后生效；翻转只用于验证，不建议在生产使用。
-- 端到端复验法（重启后执行，验证修复是否真正上线）：三个场景对应真实会话分析出的三类编辑失败——
-  ①过期锚点（行号漂移）应静默重定位成功；②坏锚点（哈希截断）报错应回显附近真实锚点，复制后一次闭环；
-  ③CRLF 文件用 LF old_text 做 replace 应成功且替换后仍为纯 CRLF。测试文件放临时目录，测完删除。
+- 永远先确认现有 `http://127.0.0.1:3080`、当前 boot revision、插件 client revision 以及 Host HMR 日志；不重启 DSH，也不启动替代 Web 服务器。
+- Host 自监视只在 `hmr.registerConfig` / `partialReload` 服务真实可用时成立。当前插件精确监视 `lib/index.js`、`lib/core.js`、`lib/presentation.js` 与 `lib/runtime-entry.js`，构建后应观察旧 Fiber 卸载、新 Fiber 激活及工具契约变化；服务缺失或失败时应明确报告，不能宣称热更新成功。
+- `file:` 安装使用 profile 物化副本；仓库 `lib/` 与 profile `node_modules/.../lib/` 是两个位置。Client 构建成功不等于 GUI 已加载新代码，必须核对被服务文件内容和 boot entry revision；Host 也必须通过真实工具调用验证新 schema/metadata 已进入进程。
+- 不依赖 profile `cordis.patch.yml` 文件 watcher 来触发组合更新；不得为了试探而翻转 manifest，避免只卸载旧 Fiber却无法重挂。安装或卸载始终走 `dsh plugin`。
+- 端到端复验至少覆盖三类历史失败：①过期锚点唯一重定位；②坏锚点回显附近真实锚点；③CRLF 文件用 LF `old_text` 匹配后仍保持原始行尾。测试文件放隔离位置，验收样例若保留在仓库，需明确其用途后再提交。
 
 ## 测试与验证
 
@@ -105,12 +105,49 @@ npm pack --dry-run --json
 ```
 
 - `check`：先执行完整 TypeScript/客户端构建，再对生成的 `lib/` 和 `test/` 做语法检查。
-- `test`：运行三组回归（core、plugin、client），覆盖 BOM、CRLF/LF、末尾换行、删除、批量顺序、重叠拒绝、
-  锚点过期、稳定读取、版本竞争、沙箱策略、一次性审批、文件观察事件、工具架构、设置热切换、
-  智能体作用域替换和客户端卡片。测试用 `test/fixtures/dsh-home` 假 profile 隔离 DSH 运行时 peer，
-  不依赖真实安装。
+- `test`：运行四组回归（core、presentation、plugin、client），覆盖 BOM、CRLF/LF、末尾换行、删除、批量顺序、重叠拒绝、
+  锚点过期、稳定读取、版本竞争、沙箱策略、一次性审批、文件观察事件、工具架构、双输入 schema、读取 envelope、
+  diff meta 与回放回退、设置热切换、智能体作用域替换和客户端卡片。测试用 `test/fixtures/dsh-home` 假 profile
+  隔离 DSH 运行时 peer，不依赖真实安装。
+- `pack --dry-run`：`prepack` 会自动重跑 `check` 与 `test`；发布清单包含 `lib/`（含 `presentation.js`）、
+  `docs/`、`cordis.patch.yml` 与 README/LICENSE。
 
-浏览器端改动需要刷新网页；Host 文件在 HMR 服务可用时自动热重载，否则按日志提示重启。
+浏览器端改动需要刷新网页；Host 文件（`lib/index.js`、`lib/core.js`、`lib/presentation.js`）在 HMR 服务
+可用时自动热重载，否则按日志提示重启。
+
+## 当前 GUI 验证路径
+
+真实 GUI 使用现有 `http://127.0.0.1:3080`，不重启 DSH、不启动替代服务器。Host 改动优先走已配置的官方 HMR
+路径（`registerConfig` 精确监视构建产物，重新 `npm run build` 后触发），并以真实工具调用确认；Client 改动必须确认构建产物已同步到当前运行 profile 且 boot entry revision 更新，再刷新或等待 Client HMR。
+
+契约级验证（无需重启即可完成，本改造已通过）：
+
+- Host 侧 `presentResult` / `presentCall` 返回的视图形状与 `@deepseek-ai/dsh-tools` 的
+  `ReadResultView` / `DiffResultView` / `DiffCallView` / `GenericCallView` 逐字段对齐；
+- 客户端消费方确认：`readCardModel` 消费 `card: 'read'` 的 `lines`/`totalLines`/`lang`/`path`，原生 fallback 的 `diffCardModel` 消费 `card: 'diff'` 的 `diffs[{path,oldText,newText}]`；Hashline keyed edit toolview 另外窄化并消费逐行 `oldHashes/newHashes`；
+- Client 为 `hashline_read` / `hashline_edit` 注册 keyed toolview；显式替换时以 priority `-100` 阴影 shipped priority `0` 的 `read` / `edit`，因为 keyed Slot 只渲染最低 live priority。禁止同 priority 注册（会直接冲突），卸载低优先级贡献后必须立即恢复 shipped toolview；
+- 读取主体直接调用平台外部模块 `@deepseek-ai/dsh-client-ui-primitives` 的 `ReadBlock`，测试桩验证传入的行为参数，不复制高亮或折叠实现。公开 `DiffBlock` 无逐行 gutter API，因此编辑卡仅复刻其表面、折叠、统计与复制语义，正文和哈希 chrome 必须保持两个 DOM span；
+- Client 导出的硬依赖只包含当前平台实际提供的 `slots`、`locale`、`connection`、`remote`、`settingsScope`。
+  动态插件沙箱里的 `styles.insert()` 是 Builtin 而非静态 client module Service，不得写入 `inject`。测试应断言
+  bundle 的 `inject` 精确列表，防止插件以 pending Fiber（`waiting for service: styles`）阻断 Web boot。
+
+呈现验收点（需 Host 新代码进入运行进程后执行）：
+
+1. `hashline_read` 成功结果使用原生 `ReadBlock`：gutter 文本严格为 `LINE|HASH`，整体继承灰色、`aria-hidden` 和 `user-select: none`；正文另存于 content span，保持可选择、可复制与语法高亮。
+2. `hashline_edit` 原版风格调用在运行前显示 pending diff；成功后显示基于真实前后文本的原生风格 diff 卡。
+3. 锚点 `edits` 调用保持通用编辑卡；成功后同样显示真实 diff 卡。
+4. 编辑删除/新增行的 gutter 严格为 `-|旧HASH` / `+|新HASH`，计算样式为灰色、`user-select: none` 且 `aria-hidden`；正文 span 保持 `user-select: auto` 和红/绿语义。跨 gutter 建立 Selection 时，`selection.toString()` 必须只包含正文。
+5. 编辑卡复制按钮序列化路径、`- `/`+ ` 与正文，不包含 Hashline gutter；这是内容复制，不是屏幕文本转储。
+6. 错误路径（stale 锚点、sandbox 拒绝）回退普通文本，不出现虚假的成功 diff。
+7. `hashline_read` 与替换后的 `read` 命中同一 keyed 读取行；`hashline_edit` 与替换后的 `edit` 命中同一 keyed 编辑行。真实 DOM 出现 shipped `data-diff` 而没有 `data-hashline-diff`，通常说明 priority 阴影未生效，而不是 Host metadata 缺失。
+
+排障时不要把“构建通过”“测试通过”“HTTP 已供应新 bundle”当作 GUI 验收。最低证据链是：boot entry revision 已更新、页面无插件启动错误、真实工具写入成功、展开后的 DOM 命中目标 keyed toolview、计算样式和 Selection/复制结果符合契约。
+
+真实环境 schema 约束（实测发现）：模型路由要求工具参数 schema 根节点必须是 `type: "object"`，
+无 `type` 的根级 `oneOf` 会在工具列表下发时被模型 API 拒绝（`Invalid schema for function ... got
+'type: null'`），并导致插件工具整体不可用。工具参数 schema（含 `edits.items`）必须保持平面 object，
+互斥与必填一律在 execute 内运行时校验（`normalizeEditRequest` / `parseEditEntries`）。output schema
+不进模型请求，可以继续使用 oneOf（如 `oldText: null` 联合）。
 
 ## 包形态
 

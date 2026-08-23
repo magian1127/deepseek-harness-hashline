@@ -475,11 +475,14 @@ test('Host 源文件通过官方 HMR 服务热重载并随 Fiber 清理 watcher'
   apply(harness.ctx)
   await new Promise(resolve => setImmediate(resolve))
 
-  assert.equal(callbacks.size, 2)
+  assert.equal(callbacks.size, 4)
   assert.equal(reloads, 0)
   assert.equal(stashed.size, 0)
   const indexPath = [...callbacks.keys()].find(path => path.replaceAll('\\', '/').endsWith('/lib/index.js'))
   assert.ok(indexPath)
+  assert.ok([...callbacks.keys()].some(path => path.replaceAll('\\', '/').endsWith('/lib/core.js')))
+  assert.ok([...callbacks.keys()].some(path => path.replaceAll('\\', '/').endsWith('/lib/presentation.js')))
+  assert.ok([...callbacks.keys()].some(path => path.replaceAll('\\', '/').endsWith('/lib/runtime-entry.js')))
   callbacks.get(indexPath)()
   await new Promise(resolve => setTimeout(resolve, 180))
   assert.equal(reloads, 1)
@@ -487,7 +490,7 @@ test('Host 源文件通过官方 HMR 服务热重载并随 Fiber 清理 watcher'
 
   await harness.disposePlugin()
   assert.equal(callbacks.size, 0)
-  assert.equal(disposed, 2)
+  assert.equal(disposed, 4)
 })
 
 test('hashline_read 使用会话 cwd、返回结构化锚点并记录观察', async () => {
@@ -642,7 +645,9 @@ test('沙箱策略接收调用会话，解析路径和写入使用同一 workspa
 test('受限文件系统才公开升级字段', () => {
   const openHarness = createHarness()
   apply(openHarness.ctx)
-  assert.equal(openHarness.tools.get('hashline_edit').parameters.properties.sandbox_permissions, undefined)
+  const openParameters = openHarness.tools.get('hashline_edit').parameters
+  assert.equal(openParameters.type, 'object')
+  assert.equal(openParameters.properties.sandbox_permissions, undefined)
 
   const confinedHarness = createHarness({ sandboxMode: 'workspace-write' })
   apply(confinedHarness.ctx)
@@ -731,16 +736,406 @@ test('无 agent 编辑在策略和 I/O 前失败', async () => {
   assert.equal(harness.policyRequests.length, 0)
 })
 
-test('编辑参数 schema 用 oneOf 固定四种互斥变体', () => {
+test('编辑参数 schema 是根级 object 的平面可选输入', () => {
   const harness = createHarness()
   apply(harness.ctx)
-  const item = harness.tools.get('hashline_edit').parameters.properties.edits.items
-  assert.equal(item.oneOf.length, 4)
-  assert.deepEqual(item.oneOf.map(branch => branch.required[0]), [
-    'set_line',
-    'replace_lines',
-    'insert_after',
-    'replace',
+  const parameters = harness.tools.get('hashline_edit').parameters
+  // 模型路由要求工具参数根节点为 type: object（根级 oneOf 会被拒绝），
+  // 双输入互斥由 execute 内 normalizeEditRequest 校验。
+  assert.equal(parameters.type, 'object')
+  assert.equal(parameters.required[0], 'file_path')
+  assert.equal(parameters.additionalProperties, false)
+  for (const key of ['file_path', 'old_string', 'new_string', 'replace_all', 'edits']) {
+    assert.ok(key in parameters.properties, `missing ${key}`)
+  }
+  const item = parameters.properties.edits.items
+  // items 同样为平面 object：四种变体互斥由 parseEditEntries 运行时校验。
+  assert.equal(item.type, 'object')
+  assert.equal(item.additionalProperties, false)
+  for (const key of ['set_line', 'replace_lines', 'insert_after', 'replace']) {
+    assert.ok(key in item.properties, `missing ${key}`)
+    assert.ok(item.properties[key].type === 'object')
+  }
+})
+
+// ---------------------------------------------------------------------------
+// presentation 与双输入契约
+// ---------------------------------------------------------------------------
+
+test('hashline_read 模型文本与原生读取卡都在行号后保留哈希', async () => {
+  const harness = createHarness({ content: 'alpha\nbeta = 1\n' })
+  apply(harness.ctx)
+  const tool = harness.tools.get('hashline_read')
+  const result = await tool.execute({ file_path: 'sample.txt' }, harness.exec)
+
+  const [block] = tool.output.render({ file_path: 'sample.txt' }, result)
+  assert.equal(block.type, 'text')
+  assert.match(block.text, /^<path>[^\n]*<\/path>\n<type>file<\/type>\n<content>\n[\s\S]*\n<\/content>$/)
+  assert.match(block.text, /1\|[0-9a-f]{4}  alpha/)
+  assert.match(block.text, /\(File metadata: eol=lf, bom=no\)/)
+  assert.match(block.text, /\(End of file - total 2 lines\)/)
+
+  const meta = tool.output.presentationMeta({ file_path: 'sample.txt' }, result)
+  assert.deepEqual(meta.lines, [
+    { number: 1, hash: result.lines[0].hash, text: 'alpha' },
+    { number: 2, hash: result.lines[1].hash, text: 'beta = 1' },
   ])
-  assert.ok(item.oneOf.every(branch => branch.additionalProperties === false))
+  assert.equal(meta.path, 'C:\\workspace\\sample.txt')
+  assert.equal(meta.offset, 1)
+  assert.equal(meta.totalLines, 2)
+  assert.equal(meta.lang, undefined)
+
+  const view = tool.presentResult({ file_path: 'sample.txt' }, {
+    content: [block],
+    isError: false,
+    meta,
+  })
+  assert.equal(view.card, 'read')
+  assert.deepEqual(view.lines, meta.lines)
+  assert.equal(view.offset, 1)
+  assert.equal(view.totalLines, 2)
+  // content 是 envelope-stripped 的模型文本，仍含锚点（Hashline 模型特征）。
+  assert.match(view.content[0].text, /1\|[0-9a-f]{4}  alpha/)
+})
+
+
+test('hashline_read 模型结果报告 CRLF 与 BOM 元数据', async () => {
+  const harness = createHarness({ content: '\uFEFFalpha\r\nbeta\r\n' })
+  apply(harness.ctx)
+  const tool = harness.tools.get('hashline_read')
+  const result = await tool.execute({ file_path: 'sample.txt' }, harness.exec)
+  const [block] = tool.output.render({}, result)
+
+  assert.equal(result.eol, 'crlf')
+  assert.equal(result.bom, true)
+  assert.match(block.text, /\(File metadata: eol=crlf, bom=yes\)/)
+})
+test('hashline_read presentResult 对错误与畸形数据回退 undefined', async () => {
+  const harness = createHarness({ content: 'a\n' })
+  apply(harness.ctx)
+  const tool = harness.tools.get('hashline_read')
+
+  assert.equal(tool.presentResult({}, { content: [], isError: true }), undefined)
+  assert.equal(tool.presentResult({}, { content: [{ type: 'text', text: 'x' }], isError: false, meta: null }), undefined)
+  // envelope 不匹配（不是读取 envelope）。
+  assert.equal(tool.presentResult({}, {
+    content: [{ type: 'text', text: 'plain' }],
+    isError: false,
+    meta: { path: 'a', offset: 1, lines: [], totalLines: 0 },
+  }), undefined)
+  // 行号乱序的畸形 meta。
+  assert.equal(tool.presentResult({}, {
+    content: [{ type: 'text', text: '<path>a</path>\n<type>file</type>\n<content>\nx\n</content>' }],
+    isError: false,
+    meta: { path: 'a', offset: 1, lines: [{ number: 3, text: 'x' }], totalLines: 2 },
+  }), undefined)
+})
+
+test('hashline_edit native 分支按 old_string/new_string 执行唯一替换', async () => {
+  const harness = createHarness({ content: 'alpha\nbeta = 1\n' })
+  apply(harness.ctx)
+  const tool = harness.tools.get('hashline_edit')
+  const result = await tool.execute({
+    file_path: 'sample.txt',
+    old_string: 'beta = 1',
+    new_string: 'beta = 2',
+  }, harness.exec)
+
+  assert.equal(harness.content, 'alpha\nbeta = 2\n')
+  assert.equal(result.changed, true)
+  assert.equal(result.replacements, 1)
+  // native 分支同样走稳定读取、观察与版本 CAS。
+  assert.equal(harness.waterfallCalls[0].name, 'fs/write-intent')
+  assert.deepEqual(harness.writeCalls[0].expected, { kind: 'replaceIfVersion', version: 'v1' })
+})
+
+test('hashline_edit native 分支支持 replace_all 与空 new_string 删除', async () => {
+  const harness = createHarness({ content: 'x x x\n' })
+  apply(harness.ctx)
+  const tool = harness.tools.get('hashline_edit')
+  const all = await tool.execute({
+    file_path: 'sample.txt',
+    old_string: 'x',
+    new_string: 'y',
+    replace_all: true,
+  }, harness.exec)
+  assert.equal(harness.content, 'y y y\n')
+  assert.equal(all.replacements, 3)
+
+  const deleted = await tool.execute({
+    file_path: 'sample.txt',
+    old_string: 'y',
+    new_string: '',
+    replace_all: true,
+  }, harness.exec)
+  assert.equal(harness.content, '  \n')
+  assert.equal(deleted.replacements, 3)
+})
+
+test('hashline_edit 忽略适配器为未选输入物化的空默认值', async () => {
+  const nativeHarness = createHarness({ content: 'alpha\nbeta = 2\n' })
+  apply(nativeHarness.ctx)
+  await nativeHarness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    old_string: 'beta = 2',
+    new_string: 'beta = 3',
+    replace_all: false,
+    edits: [],
+  }, nativeHarness.exec)
+  assert.equal(nativeHarness.content, 'alpha\nbeta = 3\n')
+
+  const anchoredHarness = createHarness({ content: 'alpha\nbeta = 2\n' })
+  apply(anchoredHarness.ctx)
+  const read = await readAnchors(anchoredHarness)
+  await anchoredHarness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    old_string: '',
+    new_string: '',
+    replace_all: false,
+    edits: [{
+      set_line: { anchor: read.lines[1].anchor, new_text: 'beta = 3' },
+      replace_lines: { start_anchor: '', end_anchor: '', new_text: '' },
+      insert_after: { anchor: '', new_text: '' },
+      replace: { old_text: '', new_text: '', all: false },
+    }],
+  }, anchoredHarness.exec)
+  assert.equal(anchoredHarness.content, 'alpha\nbeta = 3\n')
+})
+test('hashline_edit native 非 all 的重复匹配按安全语义拒绝', async () => {
+  const harness = createHarness({ content: 'beta = 1\nbeta = 1\n' })
+  apply(harness.ctx)
+  await assert.rejects(harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    old_string: 'beta = 1',
+    new_string: 'gamma',
+  }, harness.exec), error => error.code === 'HASHLINE_TEXT_NOT_UNIQUE')
+  assert.equal(harness.writeCalls.length, 0)
+  assert.equal(harness.content, 'beta = 1\nbeta = 1\n')
+})
+
+test('hashline_edit 拒绝混合或缺失的两种输入', async () => {
+  const harness = createHarness({ content: 'a\n', sandboxMode: 'workspace-write' })
+  apply(harness.ctx)
+  const tool = harness.tools.get('hashline_edit')
+  const read = await readAnchors(harness)
+  const resolvesBefore = harness.resolveCalls.length
+
+  await assert.rejects(tool.execute({
+    file_path: 'sample.txt',
+    old_string: 'a',
+    new_string: 'b',
+    edits: [{ set_line: { anchor: read.lines[0].anchor, new_text: 'b' } }],
+  }, harness.exec), error => error.code === 'HASHLINE_INVALID_ARGUMENT')
+  await assert.rejects(tool.execute({ file_path: 'sample.txt' }, harness.exec),
+    error => error.code === 'HASHLINE_INVALID_ARGUMENT')
+  assert.equal(harness.policyRequests.length, 0)
+  assert.equal(harness.approvalRequests.length, 0)
+  assert.equal(harness.resolveCalls.length, resolvesBefore)
+})
+
+test('hashline_edit presentCall 按输入分支选择 pending 展示', async () => {
+  const harness = createHarness({ content: 'a\nb\n' })
+  apply(harness.ctx)
+  const tool = harness.tools.get('hashline_edit')
+
+  const native = tool.presentCall({ file_path: 'sample.txt', old_string: 'a', new_string: 'b' })
+  assert.equal(native.card, 'diff')
+  assert.deepEqual(native.diffs, [{ path: 'sample.txt', oldText: 'a', newText: 'b' }])
+  assert.deepEqual(native.locations, [{ path: 'sample.txt' }])
+
+  const replace = tool.presentCall({ file_path: 'sample.txt', edits: [{ replace: { old_text: 'a', new_text: 'b' } }] })
+  assert.equal(replace.card, 'diff')
+  assert.deepEqual(replace.diffs, [{ path: 'sample.txt', oldText: 'a', newText: 'b' }])
+
+  const anchored = tool.presentCall({ file_path: 'sample.txt', edits: [{ set_line: { anchor: '1:abcd', new_text: 'b' } }] })
+  assert.equal(anchored.card, 'generic')
+  assert.equal(anchored.kind, 'edit')
+  assert.deepEqual(anchored.locations, [{ path: 'sample.txt' }])
+})
+
+test('hashline_edit 成功结果生成 diff meta 与原生 diff 卡，无变化时安全回退', async () => {
+  const harness = createHarness({ content: 'alpha\nbeta\n' })
+  apply(harness.ctx)
+  const tool = harness.tools.get('hashline_edit')
+  const result = await tool.execute({
+    file_path: 'sample.txt',
+    old_string: 'beta',
+    new_string: 'gamma',
+  }, harness.exec)
+
+  assert.ok(result.presentation.diffs.length >= 1)
+  assert.equal(result.presentation.diffs[0].path, 'sample.txt')
+  assert.match(result.presentation.diffs[0].oldText, /beta/)
+  assert.match(result.presentation.diffs[0].newText, /gamma/)
+  assert.equal(result.presentation.diffs[0].oldHashes.length, result.presentation.diffs[0].oldText.split('\n').length)
+  assert.equal(result.presentation.diffs[0].newHashes.length, result.presentation.diffs[0].newText.split('\n').length)
+  assert.ok(result.presentation.diffs[0].oldHashes.every(hash => /^[0-9a-f]{4}$/.test(hash)))
+  assert.ok(result.presentation.diffs[0].newHashes.every(hash => /^[0-9a-f]{4}$/.test(hash)))
+
+  const meta = tool.output.presentationMeta({ file_path: 'sample.txt' }, result)
+  assert.deepEqual(meta, { diffs: result.presentation.diffs })
+  const view = tool.presentResult({ file_path: 'sample.txt' }, {
+    content: [{ type: 'text', text: 'applied' }],
+    isError: false,
+    meta,
+  })
+  assert.equal(view.card, 'diff')
+  assert.equal(view.title, 'Edit sample.txt')
+  assert.equal(view.diffs.length, 1)
+
+  // 无变化编辑没有 hunks，但 presentationMeta 必须仍返回 lossless JSON；
+  // 真实 ToolRuntime 会拒绝 undefined projector，空 diffs 再由 presentResult 回退 generic。
+  const read = await readAnchors(harness)
+  const noop = await tool.execute({
+    file_path: 'sample.txt',
+    edits: [{ set_line: { anchor: read.lines[0].anchor, new_text: 'alpha' } }],
+  }, harness.exec)
+  assert.equal(noop.changed, false)
+  assert.equal(noop.presentation, undefined)
+  const noopMeta = tool.output.presentationMeta({}, noop)
+  assert.deepEqual(noopMeta, { diffs: [] })
+  assert.equal(tool.presentResult({ file_path: 'sample.txt' }, {
+    content: [{ type: 'text', text: 'no change' }],
+    isError: false,
+    meta: noopMeta,
+  }), undefined)
+})
+
+test('hashline_edit presentResult 对错误与畸形 meta 回退 undefined', async () => {
+  const harness = createHarness({ content: 'a\n' })
+  apply(harness.ctx)
+  const tool = harness.tools.get('hashline_edit')
+
+  assert.equal(tool.presentResult({ file_path: 'sample.txt' }, { content: [], isError: true }), undefined)
+  assert.equal(tool.presentResult({ file_path: 'sample.txt' }, {
+    content: [{ type: 'text', text: 'ok' }],
+    isError: false,
+    meta: { diffs: [] },
+  }), undefined)
+  assert.equal(tool.presentResult({ file_path: 'sample.txt' }, {
+    content: [{ type: 'text', text: 'ok' }],
+    isError: false,
+    meta: { diffs: [{ path: 3, oldText: 'a', newText: 'b' }] },
+  }), undefined)
+})
+
+test('hashline_edit 模型文本保留确认与更新锚点', async () => {
+  const harness = createHarness({ content: 'alpha\nbeta\n' })
+  apply(harness.ctx)
+  const tool = harness.tools.get('hashline_edit')
+  const result = await tool.execute({
+    file_path: 'sample.txt',
+    old_string: 'beta',
+    new_string: 'gamma',
+  }, harness.exec)
+  const [block] = tool.output.render({ file_path: 'sample.txt' }, result)
+  assert.equal(block.type, 'text')
+  assert.match(block.text, /applied 1 edit\(s\) to/)
+  assert.match(block.text, /Updated anchors:/)
+})
+
+test('CRLF 文件编辑的展示 diff 已归一为 LF 且写入保真不变', async () => {
+  const harness = createHarness({ content: '\uFEFFa\r\nb\r\n' })
+  apply(harness.ctx)
+  const read = await readAnchors(harness)
+  const result = await harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ set_line: { anchor: read.lines[1].anchor, new_text: 'B' } }],
+  }, harness.exec)
+
+  assert.equal(harness.content, '\uFEFFa\r\nB\r\n')
+  assert.ok(!result.presentation.diffs[0].oldText.includes('\r'))
+  assert.ok(!result.presentation.diffs[0].oldText.includes('\uFEFF'))
+})
+
+test('hashline_read 长行截断同时反映在模型文本与 UI 投影', async () => {
+  const harness = createHarness({ content: 'x'.repeat(20) + '\n' })
+  apply(harness.ctx, { maxLineLength: 5 })
+  const tool = harness.tools.get('hashline_read')
+  const result = await tool.execute({ file_path: 'sample.txt' }, harness.exec)
+
+  assert.equal(result.lines[0].truncated, true)
+  assert.match(result.lines[0].text, /^xxxxx\.\.\. \[truncated, 20 chars total\]$/)
+
+  // UI 投影与模型文本同源：都是截断后的显示文本，锚点仍覆盖完整行。
+  const meta = tool.output.presentationMeta({}, result)
+  assert.equal(meta.lines[0].hash, result.lines[0].hash)
+  assert.equal(meta.lines[0].text, result.lines[0].text)
+  const [block] = tool.output.render({}, result)
+  assert.match(block.text, /truncated, 20 chars total/)
+  const view = tool.presentResult({}, { content: [block], isError: false, meta })
+  assert.equal(view.card, 'read')
+  assert.match(view.content[0].text, /truncated, 20 chars total/)
+})
+
+test('替换模式下 scoped read/edit 的展示契约与全局工具一致', async () => {
+  const harness = createHarness({ content: 'alpha\nbeta\n', settings: { replaceBuiltinEdit: true } })
+  apply(harness.ctx)
+  const readTool = harness.viewTool('read')
+  const editTool = harness.viewTool('edit')
+  assert.equal(readTool.name, 'read')
+  assert.equal(editTool.name, 'edit')
+
+  const readResult = await readTool.execute({ file_path: 'sample.txt' }, harness.exec)
+  const readMeta = readTool.output.presentationMeta({}, readResult)
+  assert.equal(readMeta.path, 'C:\\workspace\\sample.txt')
+  const readView = readTool.presentResult({ file_path: 'sample.txt' }, {
+    content: readTool.output.render({}, readResult),
+    isError: false,
+    meta: readMeta,
+  })
+  assert.equal(readView.card, 'read')
+  assert.equal(readView.lines[0].hash, readResult.lines[0].hash)
+  assert.equal(readView.lines[0].text, 'alpha')
+
+  const pending = editTool.presentCall({ file_path: 'sample.txt', old_string: 'beta', new_string: 'gamma' })
+  assert.equal(pending.card, 'diff')
+  const editResult = await editTool.execute({
+    file_path: 'sample.txt',
+    old_string: 'beta',
+    new_string: 'gamma',
+  }, harness.exec)
+  assert.equal(harness.content, 'alpha\ngamma\n')
+  const editView = editTool.presentResult({ file_path: 'sample.txt' }, {
+    content: editTool.output.render({}, editResult),
+    isError: false,
+    meta: editTool.output.presentationMeta({}, editResult),
+  })
+  assert.equal(editView.card, 'diff')
+  assert.match(editView.diffs[0].oldText, /beta/)
+  assert.match(editView.diffs[0].newText, /gamma/)
+})
+
+test('替换模式下 scoped edit 的错误消息使用 edit/read 工具名', async () => {
+  const harness = createHarness({ content: 'alpha\nbeta\n', settings: { replaceBuiltinEdit: true } })
+  apply(harness.ctx)
+  const editTool = harness.viewTool('edit')
+
+  // stale 锚点错误：前缀与指引都使用 scoped 名，而不是 hashline_edit/hashline_read。
+  const read = await harness.viewTool('read').execute({ file_path: 'sample.txt' }, harness.exec)
+  await editTool.execute({ file_path: 'sample.txt', old_string: 'beta', new_string: 'BETA' }, harness.exec)
+  await assert.rejects(editTool.execute({
+    file_path: 'sample.txt',
+    edits: [{ set_line: { anchor: read.lines[1].anchor, new_text: 'x' } }],
+  }, harness.exec), error => {
+    assert.equal(error.code, 'HASHLINE_HASH_MISMATCH')
+    assert.match(error.message, /^edit: hash mismatch for set_line anchor/)
+    assert.match(error.message, /run read again/)
+    assert.ok(!error.message.includes('hashline_edit'))
+    assert.ok(!error.message.includes('hashline_read'))
+    return true
+  })
+
+  // 混合编辑错误同样使用 scoped 名。
+  await assert.rejects(editTool.execute({
+    file_path: 'sample.txt',
+    edits: [
+      { set_line: { anchor: read.lines[0].anchor, new_text: 'A' } },
+      { replace: { old_text: 'beta', new_text: 'BETA' } },
+    ],
+  }, harness.exec), error => {
+    assert.equal(error.code, 'HASHLINE_MIXED_EDIT_MODES')
+    assert.match(error.message, /^edit: anchor-verified edits and replace cannot be mixed/)
+    return true
+  })
 })

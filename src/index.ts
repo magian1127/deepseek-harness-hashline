@@ -22,6 +22,16 @@ import {
   type TextLine,
 } from './core.js'
 
+import {
+  computeHunkDiffs,
+  extractReadBody,
+  formatReadEnvelope,
+  langFromPath,
+  narrowDiffsMeta,
+  narrowReadMeta,
+  type FileDiff,
+} from './presentation.js'
+
 export const name = 'dsh-hashline'
 export const inject = ['fs', 'tools', 'systemPrompt', 'settings', 'agents'] as const
 
@@ -115,15 +125,30 @@ interface FsService {
   ): Promise<WriteOutcome>
 }
 
+interface ToolOutputDefinition {
+  schema: JsonSchema
+  render(args: unknown, value: unknown): unknown[]
+  /** 纯、可回放的展示投影；只对顶层调用计算，结果随 tool/result 持久化。 */
+  presentationMeta?(args: unknown, value: unknown): unknown
+}
+
+/** 结果呈现可用的已持久化 outcome 投影（与 DSH `ToolResult` 同构）。 */
+interface ToolResult {
+  content: Array<{ type?: string; text?: string }>
+  isError: boolean
+  meta?: unknown
+}
+
 interface ToolDefinition {
   name?: string
   source?: string
   description?: string
   parameters?: JsonSchema
-  output?: JsonSchema
+  output?: ToolOutputDefinition
   isConcurrencySafe?: () => boolean
   execute?: (rawArgs: unknown, exec: ToolExec) => unknown
   presentCall?: (args: Record<string, unknown>) => unknown
+  presentResult?: (args: Record<string, unknown>, result: ToolResult) => unknown
 }
 
 interface ToolRegistration {
@@ -495,12 +520,17 @@ function renderRead(value: {
   eol: string
   bom: boolean
 }): unknown[] {
-  const header =
-    value.totalLines === 0
-      ? `hashline_read: ${value.path} — empty file (eol: ${value.eol}${value.bom ? ', bom' : ''})`
-      : `hashline_read: ${value.path} — ${value.totalLines} lines total, showing ${value.offset}-${value.offset + value.lines.length - 1} (eol: ${value.eol}${value.bom ? ', bom' : ''})`
-  if (value.lines.length === 0) return [{ type: 'text', text: header }]
-  return [{ type: 'text', text: `${header}\n${value.lines.map(formatLine).join('\n')}` }]
+  // 模型-facing envelope 使用 `LINE|HASH  内容`；UI 由 presentationMeta 保留独立
+  // number/hash/text，客户端把 `LINE|HASH` 作为 gutter chrome 渲染。
+  const displayLines = value.lines.map(line => ({
+    number: line.number,
+    hash: line.hash,
+    text: line.text,
+  }))
+  return [{ type: 'text', text: formatReadEnvelope(value.path, value.offset, displayLines, value.totalLines, {
+    eol: value.eol,
+    bom: value.bom,
+  }) }]
 }
 
 interface EditResultValue {
@@ -514,6 +544,8 @@ interface EditResultValue {
   eol: string
   bom: boolean
   preview: LineRecord[]
+  /** 内部展示投影：写入成功后立即计算的紧凑 hunks；不保存完整 before/after。 */
+  presentation?: { diffs: FileDiff[] }
 }
 
 function renderEdit(value: EditResultValue, toolName = 'hashline_edit'): unknown[] {
@@ -566,23 +598,17 @@ const REPLACE_SCHEMA: JsonSchema = {
   },
 }
 
+// 平面 items schema：真实模型路由不接受无 `type` 的 oneOf 节点（根级实测被拒）。
+// 四种变体互斥由 parseEditEntries 在 execute 内校验（每个条目恰好一个变体键）。
 const EDIT_ITEM_SCHEMA: JsonSchema = {
-  oneOf: [
-    { type: 'object', additionalProperties: false, required: ['set_line'], properties: { set_line: SET_LINE_SCHEMA } },
-    {
-      type: 'object',
-      additionalProperties: false,
-      required: ['replace_lines'],
-      properties: { replace_lines: REPLACE_LINES_SCHEMA },
-    },
-    {
-      type: 'object',
-      additionalProperties: false,
-      required: ['insert_after'],
-      properties: { insert_after: INSERT_AFTER_SCHEMA },
-    },
-    { type: 'object', additionalProperties: false, required: ['replace'], properties: { replace: REPLACE_SCHEMA } },
-  ],
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    set_line: SET_LINE_SCHEMA,
+    replace_lines: REPLACE_LINES_SCHEMA,
+    insert_after: INSERT_AFTER_SCHEMA,
+    replace: REPLACE_SCHEMA,
+  },
 }
 
 const LINE_OUTPUT_SCHEMA: JsonSchema = {
@@ -612,6 +638,19 @@ const READ_OUTPUT_SCHEMA: JsonSchema = {
   },
 }
 
+const DIFF_OUTPUT_SCHEMA: JsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['path', 'oldText', 'newText'],
+  properties: {
+    path: { type: 'string' },
+    oldText: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+    newText: { type: 'string' },
+    oldHashes: { type: 'array', items: { type: 'string' } },
+    newHashes: { type: 'array', items: { type: 'string' } },
+  },
+}
+
 const EDIT_OUTPUT_SCHEMA: JsonSchema = {
   type: 'object',
   additionalProperties: false,
@@ -638,19 +677,118 @@ const EDIT_OUTPUT_SCHEMA: JsonSchema = {
     eol: { type: 'string', enum: ['crlf', 'lf', 'mixed', 'unknown'] },
     bom: { type: 'boolean' },
     preview: { type: 'array', items: LINE_OUTPUT_SCHEMA },
+    presentation: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['diffs'],
+      properties: {
+        diffs: { type: 'array', items: DIFF_OUTPUT_SCHEMA },
+      },
+    },
   },
 }
 
+/**
+ * 解析编辑请求为统一的内部形式：native 分支（old_string/new_string）转换为
+ * `replace` 计划（replace_all → all），Hashline 分支（edits）原样透传。
+ * 两种分支都提供或都缺失时在 sandbox、审批与文件 I/O 前拒绝，保证
+ * `planEdits` 之后只有一条执行路径，不复制安全逻辑。
+ */
+interface NormalizedEditRequest {
+  filePath: string
+  rawEdits: RawEdit[]
+}
+
+function normalizeEditRequest(args: Record<string, unknown>): NormalizedEditRequest {
+  const filePath = requirePath(args.file_path)
+  const hasOldString = typeof args.old_string === 'string' && args.old_string.length > 0
+  const hasNewString = typeof args.new_string === 'string' && (args.new_string.length > 0 || hasOldString)
+  const hasReplaceAll = args.replace_all === true
+  const onlyEmptyVariant = (value: unknown): boolean => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+    return Object.values(value).every((field) => field === '' || field === false || field === undefined)
+  }
+  const rawEdits = Array.isArray(args.edits)
+    ? args.edits.map((entry) => {
+        if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return entry
+        const record = entry as Record<string, unknown>
+        const owned: Record<string, unknown> = {}
+        for (const key of ['set_line', 'replace_lines', 'insert_after', 'replace'] as const) {
+          const value = record[key]
+          if (value !== undefined && !onlyEmptyVariant(value)) owned[key] = value
+        }
+        return owned
+      }).filter((entry) => typeof entry !== 'object' || entry === null || Array.isArray(entry) || Object.keys(entry as Record<string, unknown>).length > 0)
+    : undefined
+  const hasEdits = rawEdits !== undefined && rawEdits.length > 0
+  // 某些 Tool 适配器会把 schema 中未选用的可选字段物化为空默认值：
+  // old_string/new_string -> ''、replace_all -> false、edits -> []，并把 union
+  // 内未选中的编辑变体物化成空对象。清除这些空哨兵后再判定输入样式。
+  const hasNative = hasOldString || hasNewString || hasReplaceAll
+  if (hasNative === hasEdits) {
+    invalidArgument(
+      'provide exactly one input style: old_string/new_string (simple unique literal replacement) or edits (anchored atomic edits)',
+    )
+  }
+  if (hasNative) {
+    const oldString = args.old_string
+    const newString = args.new_string
+    if (typeof oldString !== 'string' || oldString.length === 0) {
+      invalidArgument('old_string must be a non-empty string')
+    }
+    if (typeof newString !== 'string') invalidArgument('new_string must be a string')
+    if (oldString === newString) invalidArgument('old_string and new_string must differ')
+    const replaceAll = args.replace_all === undefined ? false : args.replace_all
+    if (typeof replaceAll !== 'boolean') invalidArgument('replace_all must be a boolean')
+    return {
+      filePath,
+      rawEdits: [{ replace: { old_text: oldString, new_text: newString, all: replaceAll } }],
+    }
+  }
+  return { filePath, rawEdits: rawEdits as RawEdit[] }
+}
+
+/**
+ * 只读地判断一个 edits 项是否是完整的单条 `replace` 变体；是则返回其 pending
+ * diff（presentCall 使用，不执行校验与 I/O）。非 replace 或数据不全返回 undefined。
+ */
+function singleReplaceDiff(filePath: string, entry: unknown): FileDiff[] | undefined {
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return undefined
+  const replace = (entry as Record<string, unknown>).replace
+  if (typeof replace !== 'object' || replace === null) return undefined
+  const { old_text, new_text } = replace as Record<string, unknown>
+  if (typeof old_text !== 'string' || typeof new_text !== 'string') return undefined
+  return [{ path: filePath, oldText: old_text || null, newText: new_text }]
+}
+
 function editParameters(sandbox: SandboxController): JsonSchema {
+  const filePathField = { type: 'string', description: 'Path to edit, resolved by the DSH filesystem backend.' }
+  // 平面可选 schema：真实运行环境的模型路由要求工具参数根节点必须是
+  // `type: "object"`，根级 oneOf（无 type）会被拒绝（实测 `Invalid schema for
+  // function 'hashline_edit': ... got 'type: null'`）。互斥与必填改由
+  // `normalizeEditRequest` 在 execute 内校验：两种输入都提供或都缺失时，
+  // 在 sandbox、审批与文件 I/O 前抛 HASHLINE_INVALID_ARGUMENT。
   return {
     type: 'object',
     additionalProperties: false,
-    required: ['file_path', 'edits'],
+    required: ['file_path'],
     properties: {
-      file_path: { type: 'string', description: 'Path to edit, resolved by the DSH filesystem backend.' },
+      file_path: filePathField,
+      old_string: {
+        type: 'string',
+        description: 'Literal text to replace. Mutually exclusive with edits; must match exactly.',
+      },
+      new_string: {
+        type: 'string',
+        description: 'Literal replacement text. Use an empty string to delete the match; requires old_string.',
+      },
+      replace_all: {
+        type: 'boolean',
+        description: 'Replace all matches. Defaults to false; when false, old_string must appear exactly once. Requires old_string.',
+      },
       edits: {
         type: 'array',
-        description: 'Non-empty atomic edit list. Each item must contain exactly one edit variant.',
+        description: 'Non-empty atomic edit list, mutually exclusive with old_string. Each item must contain exactly one edit variant.',
         items: EDIT_ITEM_SCHEMA,
       },
       ...sandbox.schemaFields,
@@ -723,6 +861,19 @@ function createReadTool(
     output: {
       schema: READ_OUTPUT_SCHEMA,
       render: (_args: unknown, value: Record<string, unknown>) => renderRead(value as never),
+      // UI 投影保留 number/hash/text 三个叶字段；客户端专用 toolview 把 number/hash
+      // 合并为灰色且不可选的 gutter，text 仍是可选择、可语法高亮的文件正文。
+      presentationMeta: (_args: unknown, value: Record<string, unknown>) => {
+        const v = value as { path: string; offset: number; totalLines: number; lines: LineRecord[] }
+        const lang = langFromPath(v.path)
+        return {
+          path: v.path,
+          offset: v.offset,
+          lines: v.lines.map(({ number, hash, text }) => ({ number, hash, text })),
+          totalLines: v.totalLines,
+          ...(lang === undefined ? {} : { lang }),
+        }
+      },
     },
     isConcurrencySafe: () => true,
     async execute(rawArgs: unknown, exec: ToolExec) {
@@ -760,9 +911,30 @@ function createReadTool(
     presentCall(args: Record<string, unknown>) {
       return {
         card: 'generic',
-        title: `Hashline read ${args.file_path}`,
+        title: `Read ${args.file_path}`,
         kind: 'read',
         locations: [{ path: args.file_path, line: args.offset ?? 1 }],
+      }
+    },
+    // 成功且 meta/envelope 均合法时返回原生读取卡；错误、旧回放或畸形数据
+    // 一律返回 undefined 回退 generic，不抛错、不影响模型结果。
+    presentResult(_args: Record<string, unknown>, result: ToolResult) {
+      if (result.isError) return undefined
+      const meta = narrowReadMeta(result.meta)
+      if (meta === undefined) return undefined
+      const only = result.content.length === 1 ? result.content[0] : undefined
+      const text = only?.type === 'text' ? only.text : undefined
+      if (text === undefined) return undefined
+      const body = extractReadBody(text)
+      if (body === undefined) return undefined
+      return {
+        card: 'read',
+        path: meta.path,
+        offset: meta.offset,
+        lines: meta.lines,
+        totalLines: meta.totalLines,
+        ...(meta.lang === undefined ? {} : { lang: meta.lang }),
+        content: [{ type: 'text', text: body }],
       }
     },
   }
@@ -773,29 +945,37 @@ function createEditTool(
   options: ResolvedOptions,
   sandbox: SandboxController,
   toolName: string,
+  readToolName: string,
 ): ToolDefinition {
   return {
     name: toolName,
     description:
-      'Atomically edit an existing UTF-8 text file with fresh LINE:HASH anchors from hashline_read. ' +
+      `Edit an existing UTF-8 text file. Two input styles: (1) a simple unique literal replacement with old_string/new_string and optional replace_all, or (2) atomic edits anchored to fresh LINE:HASH anchors from ${readToolName}. ` +
       'All anchors are verified against one stable snapshot before any write; stale anchors and overlapping targets fail without changing the file. ' +
-      'Supported variants are set_line, replace_lines, insert_after, and exact replace. Anchored edits cannot be mixed with replace.',
+      'Supported anchored variants are set_line, replace_lines, insert_after, and exact replace. Anchored edits cannot be mixed with replace.',
     parameters: editParameters(sandbox),
     output: {
       schema: EDIT_OUTPUT_SCHEMA,
       render: (_args: unknown, value: Record<string, unknown>) => renderEdit(value as unknown as EditResultValue, toolName),
+      // 始终返回 lossless JSON：无变化时用空 diffs，让 presentResult 回退 generic；
+      // 不能返回 undefined，否则真实 DSH ToolRuntime 会把成功结果转成 INVALID_TOOL_OUTPUT。
+      presentationMeta: (_args: unknown, value: Record<string, unknown>) => {
+        const presentation = (value as unknown as EditResultValue).presentation
+        return { diffs: presentation?.diffs ?? [] }
+      },
     },
     async execute(rawArgs: unknown, exec: ToolExec) {
       const args = requireObject(rawArgs, 'arguments')
       assertOnlyKeys(
         args,
         sandbox.confining
-          ? ['file_path', 'edits', 'sandbox_permissions', 'justification']
-          : ['file_path', 'edits'],
+          ? ['file_path', 'old_string', 'new_string', 'replace_all', 'edits', 'sandbox_permissions', 'justification']
+          : ['file_path', 'old_string', 'new_string', 'replace_all', 'edits'],
         'arguments',
       )
-      const filePath = requirePath(args.file_path)
-      parseEditEntries(args.edits as RawEdit[])
+      const { filePath, rawEdits } = normalizeEditRequest(args)
+      // 编辑结构在 sandbox、审批和文件 I/O 前失败。
+      parseEditEntries(rawEdits)
       if (exec.agent === undefined) {
         throw hashlineError('HASHLINE_AGENT_REQUIRED', `${toolName} requires an agent-backed tool execution`)
       }
@@ -805,7 +985,9 @@ function createEditTool(
       // Recording the stable snapshot before planning lets fs-observation-policy
       // contribute the same current version to the write-intent waterfall.
       ctx.emit('fs/observed', loaded.target, { kind: 'present', version: loaded.info.version }, exec)
-      const plan = planEdits(loaded.content, args.edits as RawEdit[], options)
+      // 替换模式下错误消息使用 scoped 工具名（edit/read），默认模式为 hashline_edit/hashline_read。
+      const editOptions: EditOptions = { ...options, toolName, readToolName }
+      const plan = planEdits(loaded.content, rawEdits, editOptions)
       if (!plan.changed) {
         return resultFromContent(loaded.target.displayPath, loaded.content, plan, options)
       }
@@ -827,15 +1009,48 @@ function createEditTool(
         throw remapFileError(error, policy, sandbox.confining)
       }
       ctx.emit('fs/observed', loaded.target, { kind: 'present', version: outcome.version }, exec)
-      return resultFromContent(loaded.target.displayPath, plan.after, plan, options)
+      const value = resultFromContent(loaded.target.displayPath, plan.after, plan, options)
+      // 展示层 diff 只由实际写入的前后文本计算；失败路径不产生 presentation。
+      value.presentation = { diffs: computeHunkDiffs(filePath, loaded.content, plan.after, options.hashLength) }
+      return value
     },
     presentCall(args: Record<string, unknown>) {
+      const filePath = args.file_path
+      if (typeof filePath !== 'string') return undefined
+      const nativeDiff =
+        typeof args.old_string === 'string' && typeof args.new_string === 'string'
+          ? [{ path: filePath, oldText: args.old_string || null, newText: args.new_string }]
+          : undefined
+      const replaceDiff =
+        nativeDiff === undefined && Array.isArray(args.edits) && args.edits.length === 1
+          ? singleReplaceDiff(filePath, args.edits[0])
+          : undefined
+      const diffs = nativeDiff ?? replaceDiff
+      if (diffs !== undefined) {
+        return {
+          card: 'diff',
+          title: `Edit ${filePath}`,
+          diffs,
+          locations: [{ path: filePath }],
+        }
+      }
+      // 锚点分支没有旧文本可展示；保持简洁的 edit intent，不伪造 diff。
       return {
         card: 'generic',
-        title: `Hashline edit ${args.file_path}`,
+        title: `Edit ${filePath}`,
         kind: 'edit',
-        locations: [{ path: args.file_path }],
+        locations: [{ path: filePath }],
       }
+    },
+    // 成功且 meta 含合法 hunks 时用真实 before/after 替换 pending 内容；
+    // 错误、无变化、stale version 与畸形回放一律 undefined，回退普通文本。
+    presentResult(args: Record<string, unknown>, result: ToolResult) {
+      if (result.isError) return undefined
+      const diffs = narrowDiffsMeta(result.meta)
+      if (diffs === undefined) return undefined
+      const filePath = typeof args.file_path === 'string' ? args.file_path : diffs[0]?.path
+      if (filePath === undefined) return undefined
+      return { card: 'diff', title: `Edit ${filePath}`, diffs }
     },
   }
 }
@@ -845,10 +1060,10 @@ function guidanceText(options: ResolvedConfig): string {
   const readToolName = replaced ? 'read' : 'hashline_read'
   const editToolName = replaced ? 'edit' : 'hashline_edit'
   const finalGuidance = replaced
-    ? 'The read and edit tools are currently the Hashline read/editor; use the edit replace variant for a simple unique literal replacement. Use write for new files.'
+    ? 'The read and edit tools are currently the Hashline read/editor. Use write for new files.'
     : 'Use write for new files and the built-in edit for a simple unique literal replacement.'
   return (
-    `Use ${readToolName} followed by ${editToolName} for repeated edits to the same file, multi-location atomic edits, or when literal replacement is fragile because of whitespace or line endings. ` +
+    `Use ${editToolName} with old_string/new_string for a simple unique literal replacement, or ${readToolName} followed by ${editToolName} with edits for repeated edits to the same file, multi-location atomic edits, or when literal replacement is fragile because of whitespace or line endings. ` +
     'Copy LINE:HASH anchors exactly from the newest output. A hash mismatch means nothing was written; use the updated anchor in the error or read again. ' +
     finalGuidance
   )
@@ -858,7 +1073,12 @@ function disposeAll(disposers: Array<() => void>): void {
   while (disposers.length > 0) disposers.pop()?.()
 }
 
-const HOST_MODULES: URL[] = [new URL(import.meta.url), new URL('./core.js', import.meta.url)]
+const HOST_MODULES: URL[] = [
+  new URL(import.meta.url),
+  new URL('./core.js', import.meta.url),
+  new URL('./presentation.js', import.meta.url),
+  new URL('./runtime-entry.js', import.meta.url),
+]
 
 function pathInside(filePath: string, directory: string): boolean {
   const child = relative(directory, filePath)
@@ -985,7 +1205,7 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
     let disposeEdit: (() => void) | undefined
     try {
       disposeRead = scopedTools.register(createReadTool(ctx, current, 'edit', 'read'))
-      disposeEdit = scopedTools.register(createEditTool(ctx, current, sandbox, 'edit'))
+      disposeEdit = scopedTools.register(createEditTool(ctx, current, sandbox, 'edit', 'read'))
       const disposeRestriction = scopedTools.restrict?.({ deny: ['hashline_read', 'hashline_edit'] })
       let active = true
       replacementDisposers.set(agent, () => {
@@ -1007,7 +1227,7 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
     const added: Array<() => void> = []
     try {
       added.push(ctx.tools.register(createReadTool(ctx, toEditOptions(options), editToolName)))
-      added.push(ctx.tools.register(createEditTool(ctx, toEditOptions(options), sandbox, 'hashline_edit')))
+      added.push(ctx.tools.register(createEditTool(ctx, toEditOptions(options), sandbox, 'hashline_edit', 'hashline_read')))
       if (options.promptGuidance) {
         added.push(
           ctx.systemPrompt.section({

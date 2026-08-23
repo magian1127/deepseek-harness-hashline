@@ -9,7 +9,7 @@
 | 工具 | 作用 |
 | --- | --- |
 | `hashline_read` | 读取 UTF-8 文本文件，返回带 `LINE:HASH` 锚点的行 |
-| `hashline_edit` | 基于锚点做原子编辑（`set_line` / `replace_lines` / `insert_after` / `replace`） |
+| `hashline_edit` | 编辑文件：支持原版风格简单替换，也支持锚点原子编辑（`set_line` / `replace_lines` / `insert_after` / `replace`） |
 
 开启“替换内置读写”后，工具以 `read` / `edit` 名称出现，参数结构不变。
 
@@ -29,19 +29,47 @@
 - `offset`：起始行号，从 1 开始，默认 1。
 - `limit`：最多返回的行数，默认和上限为配置 `readLimit`（默认 2000）。
 
-输出示例：
+输出为与内置 `read` 相同的 envelope，但内容行使用 `LINE|HASH  内容` 格式：
 
 ```text
-1:f0c1|function test() {
-2:91aa|  const value = 123
-3:7b02|  return value
-4:002d|}
+<path>src/example.js</path>
+<type>file</type>
+<content>
+1|f0c1  function test() {
+2|91aa    const value = 123
+3|7b02    return value
+4|002d  }
+
+(End of file - total 4 lines)
+</content>
 ```
 
-锚点格式为 `LINE:HASH`。哈希是该行文本与真实行尾连接后的 SHA-256 前缀，覆盖完整行和真实行尾；
-长行仅截断显示，不截断哈希输入。结果会报告 BOM 和 LF/CRLF 风格。
+读取展示格式为 `LINE|HASH  内容`；编辑参数中的锚点仍是 `LINE:HASH`。哈希是该行文本与真实行尾连接后的 SHA-256 前缀，覆盖完整行和真实行尾；
+长行仅截断显示，不截断哈希输入。会话中读取成功会复用原生 `ReadBlock` 的布局、折叠、复制和语法高亮；完整
+`LINE|HASH` 位于同一个灰色、不可选中的 gutter 中，正文位于独立且可选择的 content 区域。将显示分隔符 `|` 换为 `:` 即得到编辑所需的 `LINE:HASH` 锚点。模型-facing envelope 还会报告 `eol` 与 `bom`。
 
 ## 编辑
+
+`hashline_edit` 接受两种互斥输入，一次调用只能选择一种（参数 schema 为平面可选字段，互斥在调用执行前校验；两种都提供或都缺失都会以 `HASHLINE_INVALID_ARGUMENT` 拒绝，且不会触发任何文件操作）：
+
+- **原版风格**：`old_string` / `new_string`（可选 `replace_all`），适合简单且唯一的文本替换；
+- **Hashline 风格**：`edits` 数组，适合具体行、范围、插入或多点原子修改。
+
+两种输入都会经过相同的稳定读取、版本 CAS 与写前验证。
+
+### 简单文本替换（原版风格）
+
+```json
+{
+  "file_path": "src/example.js",
+  "old_string": "const value = 123",
+  "new_string": "const value = 456"
+}
+```
+
+- `old_string` 必须非空且与 `new_string` 不同。
+- 默认要求全文唯一匹配；有多个匹配时需传 `replace_all: true`，或改用更长的 `old_string`。
+- 空 `new_string` 表示删除匹配内容。
 
 ### 修改单行（set_line）
 
@@ -101,16 +129,24 @@
 
 ## 注意事项
 
-- 锚定编辑（`set_line` / `replace_lines` / `insert_after`）与 `replace` **不能在一次调用中混用**。
+- 原版风格（`old_string` / `new_string`）与 `edits` 数组**不能混用**，也不可同时缺失。
+- 锚定编辑（`set_line` / `replace_lines` / `insert_after`）与 `edits` 内的 `replace` **不能在一次调用中混用**。
 - `set_line` / `replace_lines` 的空 `new_text` 表示删除；要写入一个有行尾的空白行，使用 `"\n"`。
 - `insert_after.new_text` 不允许为空。
-- `replace` 是严格字符串匹配，但会自动对 CRLF↔LF 做归一（无需手动对齐行尾）；不做空白折叠或模糊匹配。
+- 原版风格与 `edits[].replace` 都是严格字符串匹配；匹配时自动兼容 CRLF↔LF，写回只替换命中区间并保留 mixed EOL 文件中未触及区域的原始行尾；不做空白折叠或模糊匹配。
 - 开启“替换内置读写”后参数结构不变，只是工具调用名由 `hashline_read` / `hashline_edit` 变为 `read` / `edit`。
 - 复制锚点必须来自**最新一次**读取输出。哈希不匹配时，若全文件恰有一行与锚点哈希一致则自动重定位到该行，否则表示未写入，应使用报错里给出的新锚点或重新读取。
 
+## 会话呈现
+
+- `hashline_read` 成功结果复用 DSH 原生 `ReadBlock`（复制、折叠、语言高亮、`showing N of M`）；完整 `LINE|HASH` 是灰色且不可选的 gutter，正文独立可选，模型-facing 文本保留同一锚点。
+- `hashline_edit` 成功结果显示为原生风格 diff 卡，diff 由实际写入前后的真实文本计算：删除行以灰色不可选 gutter `-|旧HASH` 开头，新增行以 `+|新HASH` 开头，正文与 gutter 分离且可单独选择；红/绿语义、折叠、统计与复制语义和原生卡一致，复制内容不含哈希 gutter（展示层把 CRLF 归一到 LF 并忽略 BOM，实际写入保真不变）。
+- 原版风格与单条 `edits[].replace` 的调用在运行前就显示 pending diff；锚点编辑没有旧文本，保持通用编辑卡，不伪造 diff。
+- 错误、无变化、过期锚点或畸形回放数据一律回退普通文本结果；无变化 metadata 使用空 `diffs`（合法 JSON），不会把成功调用转成输出错误。
+
 ## 安全模型
 
-一次锚定编辑按以下顺序执行：
+一次编辑（无论是原版风格还是锚点风格）按以下顺序执行：
 
 1. 根据调用会话的 workspace 解析路径和 sandbox policy；
 2. 读取文件，并在前后两次 `stat` 版本一致时接受该快照；

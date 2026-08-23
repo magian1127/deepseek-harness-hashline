@@ -296,6 +296,36 @@ test('无效锚点报错回显附近真实锚点', () => {
   })
 })
 
+
+test('replace 保留 mixed EOL 文件中未触及区域的原始行尾', () => {
+  const lfMajor = 'a\nb\r\nc\n'
+  const lfResult = planEdits(lfMajor, [
+    { replace: { old_text: 'b', new_text: 'B' } },
+  ])
+  assert.equal(lfResult.after, 'a\nB\r\nc\n')
+
+  const crlfMajor = 'a\r\nb\r\nc\n'
+  const crlfResult = planEdits(crlfMajor, [
+    { replace: { old_text: 'b', new_text: 'B' } },
+  ])
+  assert.equal(crlfResult.after, 'a\r\nB\r\nc\n')
+})
+
+
+test('replace 新增换行时沿用命中位置附近的原始行尾', () => {
+  const content = 'head\r\nvalue\r\ntail\n'
+  const result = planEdits(content, [
+    { replace: { old_text: 'value', new_text: 'first\nsecond' } },
+  ])
+  assert.equal(result.after, 'head\r\nfirst\r\nsecond\r\ntail\n')
+})
+test('跨行 replace 仅沿用被替换区间的行尾风格', () => {
+  const content = 'head\nold1\r\nold2\r\ntail\n'
+  const result = planEdits(content, [
+    { replace: { old_text: 'old1\nold2\n', new_text: 'new1\nnew2\n' } },
+  ])
+  assert.equal(result.after, 'head\nnew1\r\nnew2\r\ntail\n')
+})
 test('replace 对 CRLF 文件自动做 LF 归一匹配', () => {
   const content = 'alpha\r\nbeta\r\n'
   const result = planEdits(content, [

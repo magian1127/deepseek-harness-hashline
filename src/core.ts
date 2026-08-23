@@ -270,6 +270,10 @@ export function parseAnchor(
 /** 锚点校验的上下文选项。 */
 export interface AnchorOptions extends LineRecordOptions {
   contextLines?: number
+  /** 错误消息中的编辑工具名；替换模式下为 `edit`，默认 `hashline_edit`。 */
+  toolName?: string
+  /** 错误消息中的读取工具名；替换模式下为 `read`，默认 `hashline_read`。 */
+  readToolName?: string
 }
 
 function contextRecords(lines: TextLine[], lineNumber: number, options: AnchorOptions): LineRecord[] {
@@ -283,15 +287,23 @@ function contextRecords(lines: TextLine[], lineNumber: number, options: AnchorOp
   return records
 }
 
-function mismatchMessage(label: string, parsed: ParsedAnchor, actual: string, context: LineRecord[]): string {
+function mismatchMessage(
+  label: string,
+  parsed: ParsedAnchor,
+  actual: string,
+  context: LineRecord[],
+  options: AnchorOptions = {},
+): string {
+  const toolName = options.toolName ?? 'hashline_edit'
+  const readToolName = options.readToolName ?? 'hashline_read'
   const lines = [
-    `hashline_edit: hash mismatch for ${label} anchor "${parsed.anchor}"; line ${parsed.line} is now ${parsed.line}:${actual}`,
+    `${toolName}: hash mismatch for ${label} anchor "${parsed.anchor}"; line ${parsed.line} is now ${parsed.line}:${actual}`,
     'The file changed after this anchor was read; no edit was applied.',
   ]
   for (const record of context) {
     lines.push(`${record.number === parsed.line ? '>>> ' : '    '}${record.anchor}|${record.text}`)
   }
-  lines.push('Copy the updated anchor from the line marked >>> and retry, or run hashline_read again.')
+  lines.push(`Copy the updated anchor from the line marked >>> and retry, or run ${readToolName} again.`)
   return lines.join('\n')
 }
 
@@ -306,7 +318,7 @@ export function validateAnchor(
   if (parsed.line < 1 || parsed.line > lines.length) {
     fail(
       'HASHLINE_ANCHOR_OUT_OF_RANGE',
-      `hashline_edit: ${label} anchor "${parsed.anchor}" is outside this file (${lines.length} line(s)); run hashline_read again`,
+      `${options.toolName ?? 'hashline_edit'}: ${label} anchor "${parsed.anchor}" is outside this file (${lines.length} line(s)); run ${options.readToolName ?? 'hashline_read'} again`,
       { label, anchor: parsed.anchor, totalLines: lines.length },
     )
   }
@@ -330,7 +342,7 @@ export function validateAnchor(
         : ''
     fail(
       'HASHLINE_HASH_MISMATCH',
-      mismatchMessage(label, parsed, actual, context) + relocationHint,
+      mismatchMessage(label, parsed, actual, context, options) + relocationHint,
       {
         label,
         anchor: parsed.anchor,
@@ -499,7 +511,7 @@ function describeEdit(edit: AnchoredEdit): string {
     : `${edit.kind} ${edit.start}..${edit.end}`
 }
 
-export function assertNoOverlaps(edits: AnchoredEdit[]): void {
+export function assertNoOverlaps(edits: AnchoredEdit[], toolName: string = 'hashline_edit'): void {
   for (let left = 0; left < edits.length; left += 1) {
     for (let right = left + 1; right < edits.length; right += 1) {
       const first = edits[left]
@@ -516,7 +528,7 @@ export function assertNoOverlaps(edits: AnchoredEdit[]): void {
       if (overlaps) {
         fail(
           'HASHLINE_OVERLAPPING_EDIT',
-          `hashline_edit: overlapping edits (${describeEdit(first)} vs ${describeEdit(second)}); no edit was applied`,
+          `${toolName}: overlapping edits (${describeEdit(first)} vs ${describeEdit(second)}); no edit was applied`,
           { first: describeEdit(first), second: describeEdit(second) },
         )
       }
@@ -592,7 +604,7 @@ function resolveAnchoredEdits(lines: TextLine[], edits: AnchorEdit[], options: A
       if (end < start) {
         fail(
           'HASHLINE_INVALID_RANGE',
-          `hashline_edit: replace_lines end anchor (${edit.endAnchor}) precedes start anchor (${edit.startAnchor})`,
+          `${options.toolName ?? 'hashline_edit'}: replace_lines end anchor (${edit.endAnchor}) precedes start anchor (${edit.startAnchor})`,
         )
       }
       resolved.push({ ...edit, start, end })
@@ -601,7 +613,7 @@ function resolveAnchoredEdits(lines: TextLine[], edits: AnchorEdit[], options: A
     const boundary = validateAnchor(lines, edit.anchor, 'insert_after', options)
     resolved.push({ ...edit, boundary })
   }
-  assertNoOverlaps(resolved)
+  assertNoOverlaps(resolved, options.toolName)
   return resolved
 }
 
@@ -616,41 +628,97 @@ function normalizeEolForMatch(text: string): string {
   return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 }
 
-function applyExactReplaces(body: string, edits: ReplaceEdit[]): ReplaceResult {
-  // CRLF↔LF 归一：磁盘文件常为 CRLF，而模型生成的 old_text 多为 LF，
-  // 二者逐字节匹配必然失配。仅在文件含 CRLF 时对匹配与替换统一归一，
-  // 替换后再还原行尾，保证可逆且不误伤内容。
-  const crlf = body.includes('\r\n')
-  const workingBody = crlf ? normalizeEolForMatch(body) : body
-  let current = workingBody
-  let replacements = 0
-  for (const edit of edits) {
-    const oldText = crlf ? normalizeEolForMatch(edit.oldText) : edit.oldText
-    const newText = crlf ? normalizeEolForMatch(edit.newText) : edit.newText
-    const matches = current.split(oldText).length - 1
-    if (matches === 0) {
-      fail(
-        'HASHLINE_TEXT_NOT_FOUND',
-        `hashline_edit: replace text not found: ${JSON.stringify(edit.oldText.slice(0, 120))}`,
-      )
-    }
-    if (!edit.all && matches !== 1) {
-      fail(
-        'HASHLINE_TEXT_NOT_UNIQUE',
-        'hashline_edit: replace old_text matches multiple times; set all: true or make old_text more specific',
-        { matches },
-      )
-    }
-    const count = edit.all ? matches : 1
-    current = edit.all
-      ? current.split(oldText).join(newText)
-      : current.replace(oldText, newText)
-    replacements += count
-  }
-  const resultBody = crlf ? current.replace(/\n/g, '\r\n') : current
-  return { body: resultBody, replacements }
+interface NormalizedMatchView {
+  text: string
+  /** `boundaries[i]` 是归一化文本位置 i 对应的原文 UTF-16 边界。 */
+  boundaries: number[]
 }
 
+/**
+ * 构造仅供匹配使用的 LF 视图，同时保留每个归一化边界到原文边界的映射。
+ * 这样 old_text 可跨 CRLF/LF 匹配，但写回只拼接匹配区间之外的原文切片，
+ * 不会把 mixed EOL 文件中未触及的行尾整体重写。
+ */
+function normalizedMatchView(text: string): NormalizedMatchView {
+  let normalized = ''
+  const boundaries = [0]
+  for (let index = 0; index < text.length;) {
+    if (text[index] === '\r' && text[index + 1] === '\n') {
+      normalized += '\n'
+      index += 2
+    } else {
+      normalized += text[index]
+      index += 1
+    }
+    boundaries.push(index)
+  }
+  return { text: normalized, boundaries }
+}
+
+function matchStarts(haystack: string, needle: string): number[] {
+  const starts: number[] = []
+  for (let cursor = 0;;) {
+    const found = haystack.indexOf(needle, cursor)
+    if (found === -1) return starts
+    starts.push(found)
+    cursor = found + needle.length
+  }
+}
+
+function replacementEol(originalSlice: string, body: string, originalStart: number, originalEnd: number): string {
+  if (originalSlice.includes('\r\n')) return '\r\n'
+  if (originalSlice.includes('\n')) return '\n'
+  const adjacent = body.slice(Math.max(0, originalStart - 2), Math.min(body.length, originalEnd + 2))
+  if (adjacent.includes('\r\n')) return '\r\n'
+  if (adjacent.includes('\n')) return '\n'
+  return dominantEol(splitTextFile(body).lines)
+}
+
+function applyOneExactReplace(body: string, edit: ReplaceEdit, toolName: string): ReplaceResult {
+  const view = normalizedMatchView(body)
+  const oldText = normalizeEolForMatch(edit.oldText)
+  const newText = normalizeEolForMatch(edit.newText)
+  const starts = matchStarts(view.text, oldText)
+  const matches = starts.length
+  if (matches === 0) {
+    fail(
+      'HASHLINE_TEXT_NOT_FOUND',
+      `${toolName}: replace text not found: ${JSON.stringify(edit.oldText.slice(0, 120))}`,
+    )
+  }
+  if (!edit.all && matches !== 1) {
+    fail(
+      'HASHLINE_TEXT_NOT_UNIQUE',
+      `${toolName}: replace old_text matches multiple times; set all: true or make old_text more specific`,
+      { matches },
+    )
+  }
+
+  const selected = edit.all ? starts : starts.slice(0, 1)
+  const parts: string[] = []
+  let originalCursor = 0
+  for (const start of selected) {
+    const originalStart = view.boundaries[start]
+    const originalEnd = view.boundaries[start + oldText.length]
+    const originalSlice = body.slice(originalStart, originalEnd)
+    parts.push(body.slice(originalCursor, originalStart))
+    parts.push(newText.replace(/\n/g, replacementEol(originalSlice, body, originalStart, originalEnd)))
+    originalCursor = originalEnd
+  }
+  parts.push(body.slice(originalCursor))
+  return { body: parts.join(''), replacements: selected.length }
+}
+
+function applyExactReplaces(body: string, edits: ReplaceEdit[], toolName: string = 'hashline_edit'): ReplaceResult {
+  let current = body
+  let replacements = 0
+  for (const edit of edits) {
+    const result = applyOneExactReplace(current, edit, toolName)
+    current = result.body
+    replacements += result.replacements
+  }
+  return { body: current, replacements }
+}
 export function firstChangedLine(before: string, after: string): number | null {
   if (before === after) return null
   const limit = Math.min(before.length, after.length)
@@ -686,13 +754,13 @@ export function planEdits(content: string, rawEdits: RawEdit[], options: EditOpt
   if (anchored.length > 0 && replacements.length > 0) {
     fail(
       'HASHLINE_MIXED_EDIT_MODES',
-      'hashline_edit: anchor-verified edits and replace cannot be mixed in one call; split them into separate calls',
+      `${options.toolName ?? 'hashline_edit'}: anchor-verified edits and replace cannot be mixed in one call; split them into separate calls`,
     )
   }
 
   const file = splitTextFile(content)
   if (replacements.length > 0) {
-    const result = applyExactReplaces(file.body, replacements)
+    const result = applyExactReplaces(file.body, replacements, options.toolName)
     const after = (file.bom ? '\uFEFF' : '') + result.body
     return {
       after,

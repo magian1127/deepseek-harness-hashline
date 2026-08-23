@@ -44,9 +44,9 @@
     "build": "npm run build:host && npm run build:client",
     "build:host": "tsc --project tsconfig.json",
     "build:client": "tsc --project tsconfig.client.json && tsdown --config tsdown.config.ts",
-    "check:syntax": "node --check lib/core.js && node --check lib/index.js && node --check lib/runtime-entry.js && node --check lib/client.js && node --check test/core.test.mjs && node --check test/plugin.test.mjs && node --check test/client.test.mjs",
+    "check:syntax": "node --check lib/core.js && node --check lib/index.js && node --check lib/presentation.js && node --check lib/runtime-entry.js && node --check lib/client.js && node --check test/core.test.mjs && node --check test/presentation.test.mjs && node --check test/plugin.test.mjs && node --check test/client.test.mjs",
     "check": "npm run build && npm run check:syntax",
-    "test": "npm run build && node --test test/core.test.mjs test/plugin.test.mjs test/client.test.mjs",
+    "test": "npm run build && node --test test/core.test.mjs test/presentation.test.mjs test/plugin.test.mjs test/client.test.mjs",
     "prepack": "npm run check && npm test"
   },
   "keywords": [
@@ -61,6 +61,9 @@
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
+  "dependencies": {
+    "diff": "^9.0.0"
+  },
   "devDependencies": {
     "@types/node": "^22.20.0",
     "tsdown": "^0.22.2",
@@ -73,6 +76,9 @@
     "client": {
       "platform": "web",
       "immediately": true,
+      "external": [
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ],
       "inject": [
         "@deepseek-ai/dsh-client-ui-settings-plugins",
         "@deepseek-ai/dsh-client-ui-settings",
