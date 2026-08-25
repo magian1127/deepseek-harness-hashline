@@ -222,6 +222,25 @@ const uiStyles = {
     textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer',
   },
   readBody: { margin: '4px 0 4px 4px' },
+  ioCard: {
+    display: 'flex', flexDirection: 'column', margin: '4px 0 4px 4px',
+    border: '1px solid var(--dsw-alias-border-l1)', borderRadius: 12,
+    background: 'var(--dsw-alias-markdown-code-block)', font: 'var(--dsw-font-markdown-code-block-small)',
+  },
+  ioSection: {
+    display: 'grid', gridTemplateColumns: 'max-content 1fr', columnGap: 14,
+    alignItems: 'baseline', padding: '12px 16px', maxHeight: 150, overflowY: 'auto',
+  },
+  ioLabel: {
+    position: 'sticky', top: 0, alignSelf: 'start', color: 'var(--dsw-alias-label-caption)',
+  },
+  ioText: {
+    minWidth: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--dsw-alias-label-secondary)',
+  },
+  errorSummary: {
+    flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    color: 'var(--dsw-alias-state-error-primary)', fontSize: 12, lineHeight: '20px',
+  },
   diffBody: {
     position: 'relative', margin: '4px 0 4px 4px', borderRadius: 12,
     color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-markdown-code-block)',
@@ -248,6 +267,10 @@ const uiStyles = {
     border: '1px solid var(--dsw-alias-border-l2)', borderRadius: 999,
     background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-secondary)',
     fontSize: 11, lineHeight: '16px', cursor: 'pointer',
+  },
+  visuallyHidden: {
+    position: 'absolute', width: 1, height: 1, overflow: 'hidden',
+    clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap',
   },
   primaryButton: {
     appearance: 'none',
@@ -587,6 +610,58 @@ function hashlineDiffs(block: any): HashlineDiffHunk[] | undefined {
   return diffs.every((diff: HashlineDiffHunk | undefined) => diff !== undefined) ? diffs as HashlineDiffHunk[] : undefined
 }
 
+/**
+ * 从已结算的工具结果中拉平错误文本（与原生 toolRowModel.resultText 同义）。
+ * 错误结果的 content 里带 `Error: ...` 文本块；空 content 时回退结构化 error 的 name:code。
+ * 用于让 Hashline 替换后的 read/edit 行在失败时也能展示错误详情（而非不可展开的空卡）。
+ */
+function hashlineResultText(block: any): string {
+  if (block === null || typeof block !== 'object' || block.kind !== 'tool-result') return ''
+  const parts: string[] = []
+  const content = block.content
+  if (Array.isArray(content)) {
+    for (const part of content) {
+      if (part !== null && typeof part === 'object' && typeof part.text === 'string') parts.push(part.text)
+      else if (part !== null && typeof part === 'object') parts.push(JSON.stringify(part))
+    }
+  }
+  if (parts.length === 0 && block.error !== undefined && block.error !== null && typeof block.error === 'object') {
+    const name = typeof block.error.name === 'string' ? block.error.name : 'ToolError'
+    const code = typeof block.error.code === 'string' ? block.error.code : undefined
+    parts.push(code === undefined ? name : `${name}: ${code}`)
+  }
+  return parts.join('\n')
+}
+
+function firstLineOf(text: string): string {
+  const nl = text.indexOf('\n')
+  return nl === -1 ? text : text.slice(0, nl)
+}
+
+/**
+ * 对齐原生 ToolRow 的错误态展开 body：ioCard（OUT 标签 + 红字完整错误）+ Inspect。
+ * 原生 .ioCard / .ioSection / .ioLabel / .ioText[data-error] 的结构与配色在此复刻。
+ */
+function errorIoCard(errorText: string, inspect: (() => void) | undefined): any {
+  const h = React.createElement
+  return h(React.Fragment, null,
+    h('div', { style: uiStyles.ioCard },
+      h('div', { style: uiStyles.ioSection },
+        h('span', { style: uiStyles.ioLabel }, 'OUT'),
+        h('span', { style: uiStyles.ioText, 'data-error': true }, errorText))),
+    inspect === undefined ? null : h('button', { type: 'button', style: uiStyles.toolInspect, onClick: inspect }, 'Inspect'))
+}
+
+/**
+ * 对齐原生 ToolRow 的 screen-reader 状态文本：错误/运行中输出英文（dsh-zh 的
+ * DOM 改写层会在中文界面把 'Failed' 译成「失败」），成功态无文本。
+ */
+function rowStatusText(state: string): string | null {
+  if (state === 'error') return 'Failed'
+  if (state === 'ongoing') return 'Running'
+  return null
+}
+
 type HashlineDiffRow =
   | { kind: 'path'; text: string }
   | { kind: 'gap'; text: string }
@@ -671,47 +746,58 @@ function HashlineDiffBlock({ diffs, maxLines = 8 }: { diffs: HashlineDiffHunk[];
       renderRows(tail, 'tail')),
     h('div', { style: uiStyles.diffFooter }, `└ +${model.added} -${model.removed} · ${model.files} file${model.files === 1 ? '' : 's'}`))
 }
-function createHashlineEditRow(): (props: any) => any {
-  const h = React.createElement
-  return function HashlineEditRow(props: any): any {
-    const diffs = hashlineDiffs(props.block)
-    const [open, setOpen] = React.useState(false)
-    const path = filePathFromBlock(props.block) ?? diffs?.[0]?.path ?? props.callId ?? ''
-    const running = props.block?.kind !== 'tool-result'
-    const error = props.block?.kind === 'tool-result' && props.block.isError === true
-    const expandable = diffs !== undefined
-    const isOpen = open && expandable
-    const openPath = function (event: any) {
-      event.stopPropagation()
-      if (path !== '') props.openFile(path)
-    }
+  function createHashlineEditRow(): (props: any) => any {
+    const h = React.createElement
+    return function HashlineEditRow(props: any): any {
+      const diffs = hashlineDiffs(props.block)
+      const [open, setOpen] = React.useState(false)
+      const path = filePathFromBlock(props.block) ?? diffs?.[0]?.path ?? props.callId ?? ''
+      const running = props.block?.kind !== 'tool-result'
+      const error = props.block?.kind === 'tool-result' && props.block.isError === true
+      // 失败时 content 里带 `Error: ...` 文本；用于展开详情和折叠摘要，与原生
+      // FileMutationRow 的 output / errorSummary 保持一致（错误不可展开即此 bug）。
+      const errorText = error ? hashlineResultText(props.block) : ''
+      const expandable = diffs !== undefined || errorText !== ''
+      const isOpen = open && expandable
+      const openPath = function (event: any) {
+        event.stopPropagation()
+        if (path !== '') props.openFile(path)
+      }
 
-    const state = running ? 'ongoing' : error ? 'error' : 'done'
-    const collapsedContent = path === '' ? null : h(React.Fragment, null,
-      h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
-      h('button', {
-        type: 'button', style: uiStyles.toolLink, onClick: openPath,
-        onKeyDown: function (event: any) { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
-      }, path))
-    const body = !isOpen || diffs === undefined ? null : h(React.Fragment, null,
-      h(HashlineDiffBlock, { diffs, maxLines: 8 }),
-      props.inspect === undefined ? null : h('button', {
-        type: 'button', style: uiStyles.toolInspect, onClick: props.inspect,
-      }, 'Inspect'))
-    return h('div', { 'data-tool': props.toolName, 'data-state': state },
-      h(DisclosureRow, {
-        style: uiStyles.toolRow,
-        icon: h(StateDot, { state }),
-        title: 'Edit',
-        open: isOpen,
-        expandable,
-        onToggle: function () { setOpen(!open) },
-        expandOnRowClick: true,
-        previewChevron: true,
-        collapsedContent,
-      }, body))
+      const state = running ? 'ongoing' : error ? 'error' : 'done'
+      const errorLine = errorText === '' ? null : h('span', { style: uiStyles.errorSummary, title: errorText }, firstLineOf(errorText))
+      // 对齐原生 ToolRow：错误行的折叠摘要 = 分隔点 + 错误首行（红字），不显示文件路径；
+      // keepContentWhenOpen 让展开时该摘要仍留在标题行。
+      const collapsedContent = errorLine !== null ? h(React.Fragment, null,
+        h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
+        errorLine) : path === '' ? null : h(React.Fragment, null,
+        h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
+        h('button', {
+          type: 'button', style: uiStyles.toolLink, onClick: openPath,
+          onKeyDown: function (event: any) { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
+        }, path))
+      const body = !isOpen ? null : errorText !== '' ? errorIoCard(errorText, props.inspect) : diffs === undefined ? null : h(React.Fragment, null,
+        h(HashlineDiffBlock, { diffs, maxLines: 8 }),
+        props.inspect === undefined ? null : h('button', {
+          type: 'button', style: uiStyles.toolInspect, onClick: props.inspect,
+        }, 'Inspect'))
+      const status = rowStatusText(state)
+      return h('div', { 'data-variant': 'edit', 'data-tool': props.toolName, 'data-state': state },
+        status === null ? null : h('span', { style: uiStyles.visuallyHidden }, status),
+        h(DisclosureRow, {
+          style: uiStyles.toolRow,
+          icon: h(StateDot, { state }),
+          title: 'Edit',
+          open: isOpen,
+          expandable,
+          onToggle: function () { setOpen(!open) },
+          expandOnRowClick: true,
+          previewChevron: true,
+          keepContentWhenOpen: true,
+          collapsedContent,
+        }, body))
+    }
   }
-}
 function filePathFromBlock(block: any): string | undefined {
   const argsRaw = block?.kind === 'tool-result' ? block.call?.argsRaw : block?.argsRaw
   if (typeof argsRaw !== 'string') return undefined
@@ -728,56 +814,65 @@ function filePathFromBlock(block: any): string | undefined {
  * ReadBlock 运行时只把 `number` 当 React children/key 使用；这里专用 toolview
  * 有意传入 `LINE|HASH` 字符串，让完整锚点进入原生灰色、aria-hidden gutter。
  */
-function createHashlineReadRow(): (props: any) => any {
-  const h = React.createElement
-  return function HashlineReadRow(props: any): any {
-    const view = hashlineReadView(props.block)
-    const [open, setOpen] = React.useState(false)
-    const path = filePathFromBlock(props.block) ?? view?.path ?? props.callId ?? ''
-    const running = props.block?.kind !== 'tool-result'
-    const error = props.block?.kind === 'tool-result' && props.block.isError === true
-    const expandable = view !== undefined
-    const isOpen = open && expandable
-    const openPath = function (event: any) {
-      event.stopPropagation()
-      if (path !== '') props.openFile(path)
+  function createHashlineReadRow(): (props: any) => any {
+    const h = React.createElement
+    return function HashlineReadRow(props: any): any {
+      const view = hashlineReadView(props.block)
+      const [open, setOpen] = React.useState(false)
+      const path = filePathFromBlock(props.block) ?? view?.path ?? props.callId ?? ''
+      const running = props.block?.kind !== 'tool-result'
+      const error = props.block?.kind === 'tool-result' && props.block.isError === true
+      const errorText = error ? hashlineResultText(props.block) : ''
+      const expandable = view !== undefined || errorText !== ''
+      const isOpen = open && expandable
+      const openPath = function (event: any) {
+        event.stopPropagation()
+        if (path !== '') props.openFile(path)
+      }
+      const lines = view?.lines.map(function (line) {
+        return { number: `${line.number}|${line.hash}`, text: line.text }
+      }) ?? []
+      const state = running ? 'ongoing' : error ? 'error' : 'done'
+      const errorLine = errorText === '' ? null : h('span', { style: uiStyles.errorSummary, title: errorText }, firstLineOf(errorText))
+      // 对齐原生 ToolRow：错误行的折叠摘要 = 分隔点 + 错误首行（红字），不显示文件路径；
+      // keepContentWhenOpen 让展开时该摘要仍留在标题行。
+      const collapsedContent = errorLine !== null ? h(React.Fragment, null,
+        h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
+        errorLine) : path === '' ? null : h(React.Fragment, null,
+        h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
+        h('button', {
+          type: 'button', style: uiStyles.toolLink, onClick: openPath,
+          onKeyDown: function (event: any) { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
+        }, path))
+      const body = !isOpen ? null : errorText !== '' ? errorIoCard(errorText, props.inspect) : view === undefined ? null : h(React.Fragment, null,
+        h(ReadBlock, {
+          style: uiStyles.readBody,
+          label: view.path,
+          lines,
+          totalLines: view.totalLines,
+          lang: view.lang,
+          maxLines: 8,
+        }),
+        props.inspect === undefined ? null : h('button', {
+          type: 'button', style: uiStyles.toolInspect, onClick: props.inspect,
+        }, 'Inspect'))
+      const status = rowStatusText(state)
+      return h('div', { 'data-variant': 'read', 'data-tool': props.toolName, 'data-state': state },
+        status === null ? null : h('span', { style: uiStyles.visuallyHidden }, status),
+        h(DisclosureRow, {
+          style: uiStyles.toolRow,
+          icon: h(StateDot, { state }),
+          title: 'Read',
+          open: isOpen,
+          expandable,
+          onToggle: function () { setOpen(!open) },
+          expandOnRowClick: true,
+          previewChevron: true,
+          keepContentWhenOpen: true,
+          collapsedContent,
+        }, body))
     }
-    const lines = view?.lines.map(function (line) {
-      return { number: `${line.number}|${line.hash}`, text: line.text }
-    }) ?? []
-    const state = running ? 'ongoing' : error ? 'error' : 'done'
-    const collapsedContent = path === '' ? null : h(React.Fragment, null,
-      h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
-      h('button', {
-        type: 'button', style: uiStyles.toolLink, onClick: openPath,
-        onKeyDown: function (event: any) { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
-      }, path))
-    const body = !isOpen || view === undefined ? null : h(React.Fragment, null,
-      h(ReadBlock, {
-        style: uiStyles.readBody,
-        label: view.path,
-        lines,
-        totalLines: view.totalLines,
-        lang: view.lang,
-        maxLines: 8,
-      }),
-      props.inspect === undefined ? null : h('button', {
-        type: 'button', style: uiStyles.toolInspect, onClick: props.inspect,
-      }, 'Inspect'))
-    return h('div', { 'data-tool': props.toolName, 'data-state': state },
-      h(DisclosureRow, {
-        style: uiStyles.toolRow,
-        icon: h(StateDot, { state }),
-        title: 'Read',
-        open: isOpen,
-        expandable,
-        onToggle: function () { setOpen(!open) },
-        expandOnRowClick: true,
-        previewChevron: true,
-        collapsedContent,
-      }, body))
   }
-}
 function apply(ctx: any): void {
   const t = ctx.locale.bind(LOCALE_NAMESPACE)
   const scope = ctx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE })

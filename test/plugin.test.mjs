@@ -47,6 +47,7 @@ function createHarness(options = {}) {
   }
 
   function makeAgent(id, hiddenTools = [], announce = false) {
+    const scopedPrompt = new Map()
     const session = { header: { cwd: 'C:\\workspace', id } }
     const scoped = new Map()
     const restrictions = []
@@ -75,14 +76,31 @@ function createHarness(options = {}) {
         }
       },
     }
-    agent.ctx = {
-      tools: scopedTools,
-      get(name) {
-        return name === 'tools' ? scopedTools : undefined
-      },
-    }
-    agent.__scopedTools = scoped
-    agent.__restrictions = restrictions
+      const scopedPromptService = {
+        section(section) {
+          if (scopedPrompt.has(section.name)) throw new Error(`duplicate scoped section ${section.name}`)
+          scopedPrompt.set(section.name, section)
+          let active = true
+          return () => {
+            if (!active) return
+            active = false
+            if (scopedPrompt.get(section.name) === section) scopedPrompt.delete(section.name)
+          }
+        },
+      }
+      agent.ctx = {
+        tools: scopedTools,
+        systemPrompt: scopedPromptService,
+        get(name) {
+          if (name === 'tools') return scopedTools
+          if (name === 'systemPrompt') return scopedPromptService
+          return undefined
+        },
+      }
+      agent.__scopedTools = scoped
+      agent.__restrictions = restrictions
+      agent.__scopedPrompt = scopedPrompt
+      agent.__inheritedHidden = inheritedHidden
     agent.__inheritedHidden = inheritedHidden
     liveAgents.push(agent)
     if (announce) dispatch('agent/created', { agent })
@@ -375,7 +393,13 @@ test('replaceBuiltinEdit 对现有 Agent 可逆遮蔽内置 read/edit', async ()
   assert.equal(replacement.name, 'edit')
   assert.equal(replacement.source, undefined)
   assert.equal(harness.viewTool('hashline_edit'), undefined)
-  assert.match(harness.sections.get('tool:hashline').text, /followed by edit/)
+  // 替换模式下不再注册全局 tool:hashline，改为 Agent scope 同名阴影内置提示；
+  // read/edit 各用针对性文本，不重复（read 段讲读取、edit 段讲编辑）。
+  assert.equal(harness.sections.get('tool:hashline'), undefined)
+  assert.match(harness.agent.__scopedPrompt.get('tool:read').text, /LINE:HASH anchors/)
+  assert.ok(!/followed by edit/.test(harness.agent.__scopedPrompt.get('tool:read').text))
+  assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /followed by edit/)
+  assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /Use write for new files/)
 
   const read = await readTool.execute({ file_path: 'sample.txt' }, harness.exec)
   await replacement.execute({
@@ -390,6 +414,7 @@ test('replaceBuiltinEdit 对现有 Agent 可逆遮蔽内置 read/edit', async ()
   assert.equal(harness.viewTool('read').source, 'tool-fs')
   assert.equal(harness.viewTool('hashline_read').name, 'hashline_read')
   assert.match(harness.sections.get('tool:hashline').text, /built-in edit/)
+  assert.equal(harness.agent.__scopedPrompt.size, 0)
 })
 
 test('read/edit 替换覆盖后创建的 Agent，并尊重 preset 隐藏策略', () => {

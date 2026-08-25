@@ -164,7 +164,8 @@ interface PromptSection {
 }
 
 interface SystemPromptService {
-  section(section: { name: string; order: number; text: string }): () => void
+    section(section: { name: string; order: number; text: string }): () => void
+    assemble?(context?: { scope?: unknown }): Promise<{ sections?: Array<{ name?: string; text?: string | ((context?: unknown) => string) }> }>
 }
 
 interface SettingsScope {
@@ -1069,6 +1070,35 @@ function guidanceText(options: ResolvedConfig): string {
   )
 }
 
+/**
+ * 替换模式下 tool:read 的阴影文本：只讲 Hashline 读取，不重复编辑说明。
+ * 原版 tool-fs 的 read/edit 提示词各司其职，这里同样拆分，避免合并文本在
+ * tool:read 与 tool:edit 两个 section 里重复出现。
+ */
+function readGuidanceText(options: ResolvedConfig): string {
+  const readToolName = options.replaceBuiltinEdit ? 'read' : 'hashline_read'
+  return (
+    `Use the ${readToolName} tool — not shell commands like cat — to inspect UTF-8 text files. ` +
+    'Results include LINE:HASH anchors that hash each complete line ending. ' +
+    'Copy LINE:HASH anchors exactly from the newest output. Use offset and limit to continue reading large files.'
+  )
+}
+
+/**
+ * 替换模式下 tool:edit 的阴影文本：只讲 Hashline 编辑，不再重复读取说明。
+ */
+function editGuidanceText(options: ResolvedConfig): string {
+  const replaced = options.replaceBuiltinEdit
+  const editToolName = replaced ? 'edit' : 'hashline_edit'
+  const readToolName = replaced ? 'read' : 'hashline_read'
+  return (
+    `Use the ${editToolName} tool for targeted changes to existing UTF-8 text files. ` +
+    `Use ${editToolName} with old_string/new_string for a simple unique literal replacement, or ${readToolName} followed by ${editToolName} with edits for repeated edits to the same file, multi-location atomic edits, or when literal replacement is fragile because of whitespace or line endings. ` +
+    'Copy LINE:HASH anchors exactly from the newest output. A hash mismatch means nothing was written; use the updated anchor in the error or read again. ' +
+    'Use write for new files.'
+  )
+}
+
 function disposeAll(disposers: Array<() => void>): void {
   while (disposers.length > 0) disposers.pop()?.()
 }
@@ -1096,10 +1126,23 @@ function hmrRootCoversHostModules(hmr: HmrService | undefined): boolean {
   })
 }
 
+/**
+ * 是否以 profile bundle 形态安装（模块位于 node_modules 下）。官方 HMR 的
+ * 依赖收集会跳过 node_modules（vendor/hmr `loadDependencies`），所以这种
+ * 形态下官方 HMR 永远不会跟踪本插件的模块，即使其 `root` 覆盖了本目录。
+ */
+function hostModulesAreBundled(): boolean {
+  return HOST_MODULES.some((moduleUrl) => fileURLToPath(moduleUrl).split(/[\\/]/).includes('node_modules'))
+}
+
 function installHostHotReload(ctx: DshContext): void {
   const hmr = ctx.get('hmr') as HmrService | undefined
-  if (hmr === undefined || hmr === null || hmrRootCoversHostModules(hmr)) return
+  if (hmr === undefined || hmr === null) return
   if (typeof hmr.registerConfig !== 'function' || typeof hmr.partialReload !== 'function') return
+  // 只有 workspace 形态（非 node_modules）且官方 HMR 的 root 已覆盖本目录时才
+  // 交给官方 HMR；profile bundle 形态（node_modules）官方 HMR 不会跟踪，必须
+  // 始终自注册精确监视，否则改 lib 后永远无法热重载（只能重启）。
+  if (!hostModulesAreBundled() && hmrRootCoversHostModules(hmr)) return
 
   const disposers: Array<() => void | Promise<void>> = []
   let closed = false
@@ -1203,21 +1246,42 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
 
     let disposeRead: (() => void) | undefined
     let disposeEdit: (() => void) | undefined
+    let disposePromptShadow: (() => void) | undefined
     try {
       disposeRead = scopedTools.register(createReadTool(ctx, current, 'edit', 'read'))
       disposeEdit = scopedTools.register(createEditTool(ctx, current, sandbox, 'edit', 'read'))
       const disposeRestriction = scopedTools.restrict?.({ deny: ['hashline_read', 'hashline_edit'] })
+      // 替换开启时同样替换提示词：在 Agent 自身作用域用同名 tool:read/tool:edit
+      // section 阴影内置原文（DSH system-prompt 支持 scope 层同名阴影全局层），
+      // 避免“原文 + hashline 说明”重复出现。未开启提示词注入或 service 缺失时跳过。
+      if (current.promptGuidance) {
+        const scopedPrompt = (agent?.ctx?.get?.('systemPrompt') as SystemPromptService | undefined)
+          ?? (agent?.ctx as unknown as { systemPrompt?: SystemPromptService } | undefined)?.systemPrompt
+        if (typeof scopedPrompt?.section === 'function') {
+          const promptDisposers: Array<() => void> = []
+          try {
+              promptDisposers.push(scopedPrompt.section({ name: 'tool:read', order: 100, text: readGuidanceText(current) }))
+              promptDisposers.push(scopedPrompt.section({ name: 'tool:edit', order: 102, text: editGuidanceText(current) }))
+          } catch (error) {
+            disposeAll(promptDisposers)
+            throw error
+          }
+          disposePromptShadow = () => disposeAll(promptDisposers)
+        }
+      }
       let active = true
       replacementDisposers.set(agent, () => {
         if (!active) return
         active = false
         disposeRestriction?.()
+        disposePromptShadow?.()
         disposeRead?.()
         disposeEdit?.()
       })
     } catch (error) {
       disposeRead?.()
       disposeEdit?.()
+      disposePromptShadow?.()
       warnReplacement(agent, error)
     }
   }
@@ -1228,14 +1292,8 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
     try {
       added.push(ctx.tools.register(createReadTool(ctx, toEditOptions(options), editToolName)))
       added.push(ctx.tools.register(createEditTool(ctx, toEditOptions(options), sandbox, 'hashline_edit', 'hashline_read')))
-      if (options.promptGuidance) {
-        added.push(
-          ctx.systemPrompt.section({
-            name: 'tool:hashline',
-            order: 103,
-            text: guidanceText(options),
-          }),
-        )
+      if (options.promptGuidance && !options.replaceBuiltinEdit) {
+        added.push(ctx.systemPrompt.section({ name: 'tool:hashline', order: 103, text: guidanceText(options) }))
       }
       return added
     } catch (error) {

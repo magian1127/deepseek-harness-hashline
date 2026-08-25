@@ -81,6 +81,16 @@ BOM 作为文件元数据单独保存，不进入首行哈希。这样首行显�
 - `settings.watch(...)` 实时重建工具和提示词表面；
 - `agents.list()` 与 `agent/created` 为现有及新 Agent 安装可选 scoped `edit`。
 
+提示词注入分两种模式：默认模式全局注册 `tool:hashline`（order 103）；`replaceBuiltinEdit` 开启时改为在
+每个 Agent 的自身作用域注册同名的 `tool:read` / `tool:edit` section（order 100 / 102），利用 DSH
+system-prompt 的 scope 层同名阴影规则替换内置原文，避免“原文 + hashline 说明”重复出现；关闭替换后
+scoped 阴影随整组替换 disposer 撤除，恢复全局 `tool:hashline`。
+
+阴影文本必须按工具拆分（`readGuidanceText` / `editGuidanceText`），不能把同一段合并说明同时塞进
+`tool:read` 与 `tool:edit`：两段完全相同的文本会在组装后的系统提示词里重复出现，重蹈“多出来”的旧。
+原版 tool-fs 的 read/edit 提示词各司其职，`tool:read` 只讲读取、`tool:edit` 只讲编辑；非替换模式下的
+全局 `tool:hashline` 仍用合并的 `guidanceText`（它是独立补充说明，不阴影任何 section）。
+
 读文件时执行 `stat → readText → stat`，仅在版本前后一致时接受快照；若第一次不稳定会重试
 一次。这个检查不能阻止检查完成后的变化，因此写入仍必须带版本 CAS。
 
@@ -90,7 +100,10 @@ scoped effect 已展开之后，因此这里只移除生命周期索引，不重
 
 Host 源码热更新使用官方 HMR 服务的 `registerConfig()` 精确监视 `lib/index.js` / `lib/core.js`，变化时
 把模块 URL 加入 HMR stash 并调用 `partialReload()`。watcher、debounce timer 和异步 disposer 全部归插件
-Fiber；若部署的 HMR root 已覆盖插件目录则不重复注册。它只负责源码重载，不实现或复制 profile 热安装监督器。
+Fiber。官方 HMR 的 watcher 默认 `ignored` 含 `**/node_modules`，因此本插件以 profile bundle 形态安装
+（模块路径含 node_modules）时永远不会被官方 watcher 跟踪，即使其 root 覆盖本目录；只有 workspace 形态
+（非 node_modules）且官方 root 覆盖时才跳过自注册，否则始终用 `registerConfig`（其 `ignored: undefined`）
+精确自监视。它只负责源码重载，不实现或复制 profile 热安装监督器。
 
 Web client 通过 `settingsScope.bind({ namespace: 'hashline' })` 读写同一 Host namespace，并向
 `settings.plugin.item` keyed slot 以 `key: 'hashline'` 注册卡片。它不直接访问文件、不使用
@@ -125,6 +138,9 @@ React、ToolResult 或 DSH 运行时实例。
   `ReadBlock` 的私有实现或 CSS。`hashline_edit` / 显式替换后的 `edit` 复用同一折叠行 chrome，并以 React inline style 组合原生 diff 的表面、红绿语义、折叠、统计和复制行为；由于公开 `DiffBlock` 没有逐行 gutter API，编辑行由插件显式拆成不可选且 `aria-hidden` 的 `-|HASH` / `+|HASH` gutter 与可选正文。复制器只序列化路径、原生 `- `/`+ ` 和正文，不把哈希 chrome 写入剪贴板。
 - 折叠行与编辑 diff 的局部样式不把动态 Cordis 环境的 `styles` Builtin 误声明为客户端 Service 硬依赖；否则 loader 会永久等待不存在的 `styles` Service 并阻断 Web boot。
 - 注册 `read` / `edit` 键会阴影 shipped toolview，但仅在 `enabled && replaceBuiltinEdit` 时动态注册；DSH keyed Slot 的最低 live priority 胜出，因此 Hashline 使用 `priority: -100` 覆盖 shipped 的默认 `0`，而不是在同一 priority 制造注册冲突。默认只拥有 `hashline_read` / `hashline_edit`，两种命名各自复用同一 Hashline 行组件；注销阴影贡献后 shipped toolview 自动恢复。
+- 失败结果的呈现对齐原生 `FileMutationRow`：`read` / `edit` toolview 在 `isError` 时把结果 content 里的 `Error: ...` 文本拉平（`hashlineResultText`，与原生 `toolRowModel.resultText` 同义），折叠摘要显示首行、展开显示完整错误文本，并保持可展开（修复前错误结果因无 diff 而被判为不可展开，会话列表中看不到错误、点缩放无效果）。
+- 失败行的结构逐项对齐原生 `ToolRow`：折叠摘要 = 分隔点 + 错误首行（`--dsw-alias-state-error-primary` 红字，错误时不显示文件路径链接）；展开 body 是 `ioCard`（`OUT` 标签 + `ioText[data-error]` 红字完整错误），而不是裸 `<pre>`；`DisclosureRow` 必须传 `keepContentWhenOpen` 让展开态标题行仍保留摘要；根节点带 `data-variant`，并输出 screen-reader 状态文本（英文 `Failed`/`Running`）。
+- 工具显示名靠 dsh-zh 的 DOM 文本层“整段精确匹配”改写（`CHAT_LABELS`：`Edit`→编辑、`Read`→读取、`Inspect`→检查、`Failed`→失败等），不是走 DSH locale。因此自写 toolview 里所有用户可见的英文字面量（title、Inspect、ioLabel `OUT`、diff 的复制/展开/footer 文案）必须与原生组件逐字节一致，否则翻译失效或与英文界面不一致；diff 的“复制/收起/footer”原生 `DiffBlock` 本身就是硬编码中文，照抄即可。
 
 ## 包形态
 

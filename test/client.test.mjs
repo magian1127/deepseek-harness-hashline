@@ -469,6 +469,60 @@ test('Hashline 读取 toolview 对畸形行号回放安全回退', async () => {
   assert.ok(nodes.some(node => node?.props?.['data-state'] === 'done'))
   assert.ok(!nodes.some(node => node?.props?.['aria-expanded'] !== undefined))
 })
+
+test('Hashline 编辑 toolview 对失败结果可展开并展示错误文本', async () => {
+  const reactHarness = createReactHarness()
+  const { exports } = await loadClientModule(reactHarness.React)
+  const registrations = []
+  const ctx = {
+    locale: { bind: () => key => key, register: () => () => {} },
+    settingsScope: { bind: () => ({
+      getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, revision: 0, writable: false, mode: 'host' }),
+      subscribe: () => () => {}, set: async () => {}, unset: async () => {},
+    }) },
+    slots: {
+      inject: (_name, factory) => {
+        const effect = factory()
+        if (effect !== null && typeof effect === 'object' && Symbol.iterator in effect) {
+          const disposers = [...effect]
+          return () => { for (const dispose of disposers.reverse()) dispose?.() }
+        }
+        return effect
+      },
+      register(options, Component) { registrations.push({ options, Component }); return () => {} },
+    },
+    effect: setup => setup(),
+  }
+  exports.apply(ctx)
+  const EditRow = registrations.find(item => item.options.key === 'hashline_edit').Component
+  const message = 'Error: edit: overlapping edits (replace_lines 1101..1103 vs replace_lines 1102..1103); no edit was applied'
+  const block = {
+    kind: 'tool-result', callId: 'edit-err', isError: true,
+    call: { name: 'hashline_edit', argsRaw: JSON.stringify({ file_path: 'src/index.ts' }) },
+    content: [{ type: 'text', text: message }],
+    resultView: null,
+  }
+  const props = { callId: 'edit-err', toolName: 'hashline_edit', block, openFile: () => {} }
+  // 失败结果必须可展开（修复前 expandable=false，点缩放无效果）。
+  const collapsed = reactHarness.render(() => EditRow(props))
+  const collapsedNodes = flatten(collapsed)
+  const header = collapsedNodes.find(node => node?.props?.['aria-expanded'] === false)
+  assert.ok(header, '失败结果应当可展开（aria-expanded 存在）')
+  // 折叠摘要应带错误文本第一行，且用与原生 ToolRow 一致的状态错误色（而非 label-error）。
+  assert.ok(collapsedNodes.some(node => node?.type === 'span' && node.props.style?.color === 'var(--dsw-alias-state-error-primary)' && String(node.props.children).includes('overlapping edits')))
+  // 对齐原生 ToolRow：错误行的折叠摘要就是错误首行，不再显示文件路径链接。
+  assert.ok(!collapsedNodes.some(node => node?.type === 'button' && node.props.children === 'src/index.ts'))
+  // 对齐原生 ToolRow：根节点带 data-variant，且有 screen-reader 状态文本（英文，交给 dsh-zh 改写）。
+  assert.equal(collapsed.props['data-variant'], 'edit')
+  assert.ok(collapsedNodes.some(node => node?.type === 'span' && node.props.style?.position === 'absolute' && node.props.children === 'Failed'))
+  // 展开后 body 应展示完整错误文本。
+  header.props.onClick()
+  const expanded = reactHarness.render(() => EditRow(props))
+  const expandedNodes = flatten(expanded)
+  // 展开后 body 应对齐原生 ioCard：OUT 标签 + data-error 的完整错误文本。
+  assert.ok(expandedNodes.some(node => node?.type === 'span' && node.props['data-error'] === true && node.props.children === message))
+  assert.ok(expandedNodes.some(node => node?.type === 'span' && node.props.children === 'OUT'))
+})
 test('客户端配置卡片包含全局、替换、提示词和四个数值字段', async () => {
   const reactHarness = createReactHarness()
   const { exports } = await loadClientModule(reactHarness.React)

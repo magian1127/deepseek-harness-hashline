@@ -93,7 +93,7 @@ The plugin does not register capabilities beyond its model tools, upload data, o
 
 **Can a short hash collide?** A short hash has a theoretical collision probability. The default 4 hexadecimal characters provide a 16-bit check and are combined with the line number and file-level version CAS. Increase `hashLength` for higher-risk deployments.
 
-**How does Replace built-in read/edit work?** When enabled, an allowed agent sees `read` and `edit` using Hashline anchors, while `hashline_read` and `hashline_edit` are hidden. The original tools are restored when the setting is disabled. Replacement is installed only when the agent already has access to `read`, `edit`, `hashline_read`, and `hashline_edit`, so it cannot bypass visibility restrictions.
+**How does Replace built-in read/edit work?** When enabled, an allowed agent sees `read` and `edit` using Hashline anchors, while `hashline_read` and `hashline_edit` are hidden. The original tools are restored when the setting is disabled. Replacement is installed only when the agent already has access to `read`, `edit`, `hashline_read`, and `hashline_edit`, so it cannot bypass visibility restrictions. When replacement is active, the built-in `read` / `edit` system-prompt guidance is also replaced in each allowed agent's scope by the same-named Hashline guidance, so the instructions never appear twice; disabling the setting restores the original guidance.
 
 ## Development documentation
 

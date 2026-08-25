@@ -106,7 +106,7 @@ dsh plugin --profile web remove deepseek-harness-hashline
 
 **“替换内置读写”怎么用？** 开启后，允许编辑的智能体看到的是 `read` / `edit`（哈希锚点格式），
 `hashline_read` / `hashline_edit` 被隐藏；关闭开关恢复原工具。替换只在智能体原本能看到 `read`、`edit`、
-`hashline_read`、`hashline_edit` 时安装，避免绕过配置限制。
+`hashline_read`、`hashline_edit` 时安装，避免绕过配置限制。开启替换时，系统提示中的内置 `read` / `edit` 说明也会在允许编辑的智能体作用域被同名 Hashline 提示替换，不会出现两份重复说明；关闭后原提示恢复。
 
 ## 开发文档
 

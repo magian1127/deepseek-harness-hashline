@@ -50,6 +50,12 @@ dsh plugin --profile web add "link:<绝对路径>/deepseek-harness-hashline"
 
 新版运行时经 `src/profile-modules.ts` 从 profile 解析 DSH peer，`file:` 与 `link:` 安装都不再需要本地 junction 或 `setup:link`。
 
+`file:` 与 `link:` 的物理形态不同：`file:` 由 pnpm 把包**复制**到 profile `node_modules`（普通目录），改工作区
+`src/`、`lib/` 不会反映到运行副本，需要重新 `dsh plugin add` 或手动同步；`link:` 在 `node_modules` 里建**符号链接**
+指向工作区（`LinkType=SymbolicLink`，与 dsh-zh 同形态），改 `lib/` 后运行副本即见新文件。持续开发一律用 `link:`，
+避免“改完源码但运行进程仍用旧副本”的混淆。注意：无论 `file:` 还是 `link:`，模块 URL 仍含 node_modules，因此
+都受上一条 node_modules HMR 失效的约束——link 本身不等于热生效，仍靠插件的 HMR 自监视或一次冷加载。
+
 ## Peer 解析
 
 运行时 peer `@deepseek-ai/dsh-llm` 和 `@deepseek-ai/schemastery` 不写入本包依赖：`src/profile-modules.ts`
@@ -92,7 +98,9 @@ npm run build
 - Host 自监视只在 `hmr.registerConfig` / `partialReload` 服务真实可用时成立。当前插件精确监视 `lib/index.js`、`lib/core.js`、`lib/presentation.js` 与 `lib/runtime-entry.js`，构建后应观察旧 Fiber 卸载、新 Fiber 激活及工具契约变化；服务缺失或失败时应明确报告，不能宣称热更新成功。
 - `file:` 安装使用 profile 物化副本；仓库 `lib/` 与 profile `node_modules/.../lib/` 是两个位置。Client 构建成功不等于 GUI 已加载新代码，必须核对被服务文件内容和 boot entry revision；Host 也必须通过真实工具调用验证新 schema/metadata 已进入进程。
 - 不依赖 profile `cordis.patch.yml` 文件 watcher 来触发组合更新；不得为了试探而翻转 manifest，避免只卸载旧 Fiber却无法重挂。安装或卸载始终走 `dsh plugin`。
+- 官方 HMR 的 watcher 默认 `ignored` 含 `**/node_modules`，且依赖收集（`loadDependencies`）也跳过 `/node_modules/`。因此以 profile bundle 形态（`file:` 或 `link:`，模块路径含 node_modules）安装时，官方 HMR 永远不跟踪本插件；插件自身的 HMR 自监视又因 `hmrRootCoversHostModules` 误判“官方 root 已覆盖”而跳过自注册，两头落空，改 `lib/` 后必须重启才能加载。修复：profile bundle 形态强制用 `hmr.registerConfig`（其 `ignored: undefined`）精确自监视；只有 workspace 形态（非 node_modules）且官方 root 覆盖时才跳过自注册。
 - 端到端复验至少覆盖三类历史失败：①过期锚点唯一重定位；②坏锚点回显附近真实锚点；③CRLF 文件用 LF `old_text` 匹配后仍保持原始行尾。测试文件放隔离位置，验收样例若保留在仓库，需明确其用途后再提交。
+- 验证提示词注入：系统提示词不持久化进会话日志正文，但会随每个请求写入 `request/header` 的 `system` 字段。会话导出文件（`.jsonl` 或 `.jsonl.zstd`）里 grep `request/header` 即可看到当次真实组装后的系统提示词；`.jsonl.zstd` 是多帧 zstd，Node 内置 `node:zlib` 的 `zstdDecompressSync` 只解第一帧，需按魔数 `28 B5 2F FD` 扫描并逐帧解压。这是确认“提示词是否重复/缺失”的最直接证据，不要只靠 build/test 通过。
 
 ## 测试与验证
 

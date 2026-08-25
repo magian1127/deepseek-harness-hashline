@@ -171,7 +171,7 @@ bundle 默认配置位于 `cordis.patch.yml`：
 | `readLimit` | 2000 | 单次读取最大行数 |
 | `maxLineLength` | 500 | 单行显示截断阈值，哈希仍覆盖完整行 |
 | `contextLines` | 2 | 失败与成功预览两侧的上下文行数，范围 0–20 |
-| `promptGuidance` | true | 是否注册简短工具选用提示 |
+| `promptGuidance` | true | 是否注册简短工具选用提示；替换内置读写开启时，提示以同名 section 阴影在 Agent 作用域替换内置 `read` / `edit` 原提示 |
 
 `cordis.patch.yml` 中的值是部署组合基线。安装并重启后，可在“设置 → 插件 → 插件配置 → 哈希锚点编辑”中
 保存用户覆盖；“恢复默认值”会清除用户层字段并重新继承组合基线。设置实时生效。
