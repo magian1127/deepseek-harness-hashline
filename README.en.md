@@ -32,6 +32,7 @@
 | Stale-anchor recovery | Returns nearby current lines and fresh anchors when an anchor is no longer valid. |
 | Native result cards | Successful reads reuse DSH native `ReadBlock`: the whole `LINE|HASH` is one gray, unselectable gutter while the text remains separately selectable and syntax-highlighted. Successful edits use native-style diff chrome: removed/added rows show gray, unselectable `-|OLD_HASH` / `+|NEW_HASH` gutters while preserving red/green diff semantics and content-only selection/copy. |
 | Reversible replacement | Agent-scoped built-in tool replacement is reversible and is cleaned up with the owning Cordis Fiber. |
+| Chinese prompt guidance | When enabled, the injected prompt guidance and tool descriptions are in Chinese while tool names stay in English. |
 
 ## Requirements
 

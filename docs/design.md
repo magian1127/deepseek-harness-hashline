@@ -91,6 +91,11 @@ scoped 阴影随整组替换 disposer 撤除，恢复全局 `tool:hashline`。
 原版 tool-fs 的 read/edit 提示词各司其职，`tool:read` 只讲读取、`tool:edit` 只讲编辑；非替换模式下的
 全局 `tool:hashline` 仍用合并的 `guidanceText`（它是独立补充说明，不阴影任何 section）。
 
+`zhPrompt` 开启时，三个提示词函数（`guidanceText` / `readGuidanceText` / `editGuidanceText`）与工具/参数的
+`description` 全部改为中文（工具 description、`file_path`/`offset`/`limit`/`old_string`/`new_string`/`replace_all`/`edits`
+及四种编辑变体的参数 description），工具名（`read`/`edit`/`hashline_read`/`hashline_edit`）保持英文。编辑变体的
+items schema 因此由模块级常量改为 `editItemSchema(zhPrompt)` 工厂，`editParameters` 相应接收 `zhPrompt`。
+
 读文件时执行 `stat → readText → stat`，仅在版本前后一致时接受快照；若第一次不稳定会重试
 一次。这个检查不能阻止检查完成后的变化，因此写入仍必须带版本 CAS。
 

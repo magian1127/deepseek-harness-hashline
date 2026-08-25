@@ -10,6 +10,7 @@ const FIELDS = [
   'enabled',
   'replaceBuiltinEdit',
   'promptGuidance',
+  'zhPrompt',
   'hashLength',
   'readLimit',
   'maxLineLength',
@@ -20,6 +21,7 @@ const DEFAULTS = {
   enabled: true,
   replaceBuiltinEdit: false,
   promptGuidance: true,
+  zhPrompt: false,
   hashLength: 4,
   readLimit: 2000,
   maxLineLength: 500,
@@ -48,6 +50,8 @@ const zh = {
   replaceBuiltinEditDesc: '让每个允许编辑的智能体使用哈希锚点读写方式；关闭后恢复该智能体原有的读取与编辑工具。',
   promptGuidance: '注入工具选择提示',
   promptGuidanceDesc: '在系统提示中说明何时使用哈希锚点读取和编辑。',
+  zhPrompt: '提示词中文化',
+  zhPromptDesc: '将注入的提示词与工具说明改为中文；工具名保持英文。',
   hashLength: '哈希长度',
   hashLengthDesc: '每个行锚点中的十六进制字符数（3–16）。',
   readLimit: '单次读取最大行数',
@@ -82,6 +86,8 @@ const en = {
   replaceBuiltinEditDesc: '让每个允许编辑的智能体使用哈希锚点读写方式；关闭后恢复该智能体原有的读取与编辑工具。',
   promptGuidance: '注入工具选择提示',
   promptGuidanceDesc: '在系统提示中说明何时使用哈希锚点读取和编辑。',
+  zhPrompt: '提示词中文化',
+  zhPromptDesc: '将注入的提示词与工具说明改为中文；工具名保持英文。',
   hashLength: '哈希长度',
   hashLengthDesc: '每个行锚点中的十六进制字符数（3–16）。',
   readLimit: '单次读取最大行数',
@@ -294,6 +300,7 @@ interface SettingsValue {
   enabled: boolean
   replaceBuiltinEdit: boolean
   promptGuidance: boolean
+  zhPrompt: boolean
   hashLength: number
   readLimit: number
   maxLineLength: number
@@ -305,7 +312,8 @@ function normalized(value: unknown): SettingsValue {
   return {
     enabled: typeof source.enabled === 'boolean' ? source.enabled : DEFAULTS.enabled,
     replaceBuiltinEdit: typeof source.replaceBuiltinEdit === 'boolean' ? source.replaceBuiltinEdit : DEFAULTS.replaceBuiltinEdit,
-    promptGuidance: typeof source.promptGuidance === 'boolean' ? source.promptGuidance : DEFAULTS.promptGuidance,
+      promptGuidance: typeof source.promptGuidance === 'boolean' ? source.promptGuidance : DEFAULTS.promptGuidance,
+      zhPrompt: typeof source.zhPrompt === 'boolean' ? source.zhPrompt : DEFAULTS.zhPrompt,
     hashLength: source.hashLength !== undefined ? source.hashLength as number : DEFAULTS.hashLength,
     readLimit: source.readLimit !== undefined ? source.readLimit as number : DEFAULTS.readLimit,
     maxLineLength: source.maxLineLength !== undefined ? source.maxLineLength as number : DEFAULTS.maxLineLength,
@@ -467,6 +475,11 @@ function createCard(scope: any, t: (key: string) => string): () => any {
           field: 'promptGuidance', value: draft.promptGuidance, disabled: !editable,
           overridden: hasOwn(snapshot.user, 'promptGuidance'),
           onChange: function (next: boolean) { change('promptGuidance', next) },
+        }),
+        h(ToggleRow, {
+          field: 'zhPrompt', value: draft.zhPrompt, disabled: !editable,
+          overridden: hasOwn(snapshot.user, 'zhPrompt'),
+          onChange: function (next: boolean) { change('zhPrompt', next) },
         }),
         h('div', { style: uiStyles.numberGrid, 'data-hashline-number-grid': '' }, NUMBER_FIELDS.map(function (spec) {
           return h(NumberField, {

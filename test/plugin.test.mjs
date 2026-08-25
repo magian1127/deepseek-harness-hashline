@@ -332,6 +332,32 @@ test('promptGuidance=false 时不注册提示词', () => {
   assert.equal(harness.tools.size, 2)
 })
 
+test('zhPrompt=true 时提示词与工具说明中文化，工具名保持英文', () => {
+  const harness = createHarness()
+  apply(harness.ctx, { zhPrompt: true })
+
+  // 工具名仍为英文。
+  assert.deepEqual([...harness.tools.keys()], ['hashline_read', 'hashline_edit'])
+  // 工具 description 中文化。
+  assert.match(harness.tools.get('hashline_read').description, /用 LINE:HASH 锚点读取 UTF-8 文本文件/)
+  assert.match(harness.tools.get('hashline_edit').description, /编辑现有 UTF-8 文本文件/)
+  // 参数 description 中文化。
+  assert.equal(harness.tools.get('hashline_read').parameters.properties.file_path.description, '要读取的路径，相对于调用会话工作区解析。')
+  const editProps = harness.tools.get('hashline_edit').parameters.properties
+  assert.equal(editProps.old_string.description, '要替换的字面文本。与 edits 互斥；必须精确匹配。')
+  assert.match(editProps.edits.items.properties.set_line.properties.anchor.description, /从 hashline_read 复制的 LINE:HASH 锚点/)
+  // 提示词 section 中文化。
+  assert.match(harness.sections.get('tool:hashline').text, /用 hashline_edit 配合 old_string\/new_string/)
+})
+
+test('zhPrompt=false 时提示词与工具说明保持英文', () => {
+  const harness = createHarness()
+  apply(harness.ctx, { zhPrompt: false })
+  assert.match(harness.tools.get('hashline_read').description, /Read a UTF-8 text file with LINE:HASH anchors/)
+  assert.equal(harness.tools.get('hashline_read').parameters.properties.file_path.description, 'Path to read, resolved relative to the calling session workspace.')
+  assert.match(harness.sections.get('tool:hashline').text, /Use hashline_edit with old_string\/new_string/)
+})
+
 test('注册显式暴露的 Hashline 持久设置命名空间', () => {
   const harness = createHarness()
   apply(harness.ctx)

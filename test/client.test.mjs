@@ -224,7 +224,7 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
 
   tree = reactHarness.render(Card)
   nodes = flatten(tree)
-  assert.equal(nodes.filter(node => node?.type === 'input' && node.props.type === 'checkbox').length, 3)
+  assert.equal(nodes.filter(node => node?.type === 'input' && node.props.type === 'checkbox').length, 4)
   assert.equal(nodes.filter(node => node?.type === 'input' && node.props.type === 'number').length, 4)
 
   const enabled = nodes.find(node => node?.type === 'input' && node.props['aria-label'] === 'enabled')
@@ -523,7 +523,7 @@ test('Hashline 编辑 toolview 对失败结果可展开并展示错误文本', a
   assert.ok(expandedNodes.some(node => node?.type === 'span' && node.props['data-error'] === true && node.props.children === message))
   assert.ok(expandedNodes.some(node => node?.type === 'span' && node.props.children === 'OUT'))
 })
-test('客户端配置卡片包含全局、替换、提示词和四个数值字段', async () => {
+test('客户端配置卡片包含全局、替换、提示词、中文化和四个数值字段', async () => {
   const reactHarness = createReactHarness()
   const { exports } = await loadClientModule(reactHarness.React)
   const source = await import('node:fs/promises').then(fs => fs.readFile(new URL('../lib/client.js', import.meta.url), 'utf8'))
@@ -532,6 +532,7 @@ test('客户端配置卡片包含全局、替换、提示词和四个数值字�
     'enabled',
     'replaceBuiltinEdit',
     'promptGuidance',
+    'zhPrompt',
     'hashLength',
     'readLimit',
     'maxLineLength',

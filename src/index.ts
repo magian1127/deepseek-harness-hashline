@@ -57,6 +57,7 @@ export function createConfigSchema(z: SchemaFactory): unknown {
     maxLineLength: z.number().step(1).min(1).default(DEFAULT_MAX_LINE_LENGTH),
     contextLines: z.number().step(1).min(0).max(20).default(DEFAULT_CONTEXT_LINES),
     promptGuidance: z.boolean().default(true),
+    zhPrompt: z.boolean().default(false),
   })
 }
 
@@ -254,7 +255,8 @@ interface ResolvedConfig {
   readLimit: number
   maxLineLength: number
   contextLines: number
-  promptGuidance: boolean
+    promptGuidance: boolean
+    zhPrompt: boolean
 }
 
 const CONFIG_KEYS = [
@@ -265,6 +267,7 @@ const CONFIG_KEYS = [
   'maxLineLength',
   'contextLines',
   'promptGuidance',
+  'zhPrompt',
 ] as const
 
 function invalidArgument(message: string): never {
@@ -307,6 +310,7 @@ function resolveConfig(config: Record<string, unknown> = {}): ResolvedConfig {
   const maxLineLength = config.maxLineLength ?? DEFAULT_MAX_LINE_LENGTH
   const contextLines = config.contextLines ?? DEFAULT_CONTEXT_LINES
   const promptGuidance = config.promptGuidance ?? true
+  const zhPrompt = config.zhPrompt ?? false
 
   if (typeof enabled !== 'boolean') {
     throw new HashlineError('HASHLINE_INVALID_CONFIG', 'enabled must be a boolean')
@@ -326,6 +330,9 @@ function resolveConfig(config: Record<string, unknown> = {}): ResolvedConfig {
   if (typeof promptGuidance !== 'boolean') {
     throw new HashlineError('HASHLINE_INVALID_CONFIG', 'promptGuidance must be a boolean')
   }
+  if (typeof zhPrompt !== 'boolean') {
+    throw new HashlineError('HASHLINE_INVALID_CONFIG', 'zhPrompt must be a boolean')
+  }
 
   return {
     enabled,
@@ -335,6 +342,7 @@ function resolveConfig(config: Record<string, unknown> = {}): ResolvedConfig {
     maxLineLength: maxLineLength as number,
     contextLines: contextLines as number,
     promptGuidance,
+    zhPrompt,
   }
 }
 
@@ -557,59 +565,42 @@ function renderEdit(value: EditResultValue, toolName = 'hashline_edit'): unknown
   return [{ type: 'text', text: `${summary}\nUpdated anchors:\n${value.preview.map(formatLine).join('\n')}` }]
 }
 
-const SET_LINE_SCHEMA: JsonSchema = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['anchor', 'new_text'],
-  properties: {
-    anchor: { type: 'string', description: 'LINE:HASH anchor copied from hashline_read, for example "42:f7a9".' },
-    new_text: { type: 'string', description: 'Replacement content; an empty string deletes the anchored line.' },
-  },
-}
-
-const REPLACE_LINES_SCHEMA: JsonSchema = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['start_anchor', 'end_anchor', 'new_text'],
-  properties: {
-    start_anchor: { type: 'string', description: 'Anchor for the first line in the inclusive range.' },
-    end_anchor: { type: 'string', description: 'Anchor for the last line in the inclusive range.' },
-    new_text: { type: 'string', description: 'Replacement content; an empty string deletes the range.' },
-  },
-}
-
-const INSERT_AFTER_SCHEMA: JsonSchema = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['anchor', 'new_text'],
-  properties: {
-    anchor: { type: 'string', description: 'Anchor of the line after which content is inserted.' },
-    new_text: { type: 'string', description: 'Content to insert. It must not be empty.' },
-  },
-}
-
-const REPLACE_SCHEMA: JsonSchema = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['old_text', 'new_text'],
-  properties: {
-    old_text: { type: 'string', description: 'Literal text to replace. It must not be empty.' },
-    new_text: { type: 'string', description: 'Literal replacement text.' },
-    all: { type: 'boolean', description: 'Replace every occurrence. The default is false, which requires exactly one match.' },
-  },
-}
-
+// 四种编辑变体的 items schema：参数 description 随 zhPrompt 中文化，工具名不变。
 // 平面 items schema：真实模型路由不接受无 `type` 的 oneOf 节点（根级实测被拒）。
 // 四种变体互斥由 parseEditEntries 在 execute 内校验（每个条目恰好一个变体键）。
-const EDIT_ITEM_SCHEMA: JsonSchema = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    set_line: SET_LINE_SCHEMA,
-    replace_lines: REPLACE_LINES_SCHEMA,
-    insert_after: INSERT_AFTER_SCHEMA,
-    replace: REPLACE_SCHEMA,
-  },
+function editItemSchema(zhPrompt: boolean): JsonSchema {
+  const anchorDesc = zhPrompt ? '从 hashline_read 复制的 LINE:HASH 锚点，例如 "42:f7a9"。' : 'LINE:HASH anchor copied from hashline_read, for example "42:f7a9".'
+  const setLineNewText = zhPrompt ? '替换内容；空字符串删除该行。' : 'Replacement content; an empty string deletes the anchored line.'
+  const startAnchor = zhPrompt ? '包含范围内首行的锚点。' : 'Anchor for the first line in the inclusive range.'
+  const endAnchor = zhPrompt ? '包含范围内末行的锚点。' : 'Anchor for the last line in the inclusive range.'
+  const rangeNewText = zhPrompt ? '替换内容；空字符串删除该范围。' : 'Replacement content; an empty string deletes the range.'
+  const insertAnchor = zhPrompt ? '在其后插入内容的那一行的锚点。' : 'Anchor of the line after which content is inserted.'
+  const insertNewText = zhPrompt ? '要插入的内容。不能为空。' : 'Content to insert. It must not be empty.'
+  const oldText = zhPrompt ? '要替换的字面文本。不能为空。' : 'Literal text to replace. It must not be empty.'
+  const newText = zhPrompt ? '替换后的字面文本。' : 'Literal replacement text.'
+  const all = zhPrompt ? '替换每个匹配。默认 false，即要求恰好一个匹配。' : 'Replace every occurrence. The default is false, which requires exactly one match.'
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      set_line: {
+        type: 'object', additionalProperties: false, required: ['anchor', 'new_text'],
+        properties: { anchor: { type: 'string', description: anchorDesc }, new_text: { type: 'string', description: setLineNewText } },
+      },
+      replace_lines: {
+        type: 'object', additionalProperties: false, required: ['start_anchor', 'end_anchor', 'new_text'],
+        properties: { start_anchor: { type: 'string', description: startAnchor }, end_anchor: { type: 'string', description: endAnchor }, new_text: { type: 'string', description: rangeNewText } },
+      },
+      insert_after: {
+        type: 'object', additionalProperties: false, required: ['anchor', 'new_text'],
+        properties: { anchor: { type: 'string', description: insertAnchor }, new_text: { type: 'string', description: insertNewText } },
+      },
+      replace: {
+        type: 'object', additionalProperties: false, required: ['old_text', 'new_text'],
+        properties: { old_text: { type: 'string', description: oldText }, new_text: { type: 'string', description: newText }, all: { type: 'boolean', description: all } },
+      },
+    },
+  }
 }
 
 const LINE_OUTPUT_SCHEMA: JsonSchema = {
@@ -762,8 +753,8 @@ function singleReplaceDiff(filePath: string, entry: unknown): FileDiff[] | undef
   return [{ path: filePath, oldText: old_text || null, newText: new_text }]
 }
 
-function editParameters(sandbox: SandboxController): JsonSchema {
-  const filePathField = { type: 'string', description: 'Path to edit, resolved by the DSH filesystem backend.' }
+function editParameters(sandbox: SandboxController, zhPrompt: boolean): JsonSchema {
+  const filePathField = { type: 'string', description: zhPrompt ? '要编辑的路径，由 DSH 文件系统后端解析。' : 'Path to edit, resolved by the DSH filesystem backend.' }
   // 平面可选 schema：真实运行环境的模型路由要求工具参数根节点必须是
   // `type: "object"`，根级 oneOf（无 type）会被拒绝（实测 `Invalid schema for
   // function 'hashline_edit': ... got 'type: null'`）。互斥与必填改由
@@ -777,20 +768,20 @@ function editParameters(sandbox: SandboxController): JsonSchema {
       file_path: filePathField,
       old_string: {
         type: 'string',
-        description: 'Literal text to replace. Mutually exclusive with edits; must match exactly.',
+        description: zhPrompt ? '要替换的字面文本。与 edits 互斥；必须精确匹配。' : 'Literal text to replace. Mutually exclusive with edits; must match exactly.',
       },
       new_string: {
         type: 'string',
-        description: 'Literal replacement text. Use an empty string to delete the match; requires old_string.',
+        description: zhPrompt ? '替换后的字面文本。空字符串表示删除匹配；需要 old_string。' : 'Literal replacement text. Use an empty string to delete the match; requires old_string.',
       },
       replace_all: {
         type: 'boolean',
-        description: 'Replace all matches. Defaults to false; when false, old_string must appear exactly once. Requires old_string.',
+        description: zhPrompt ? '替换所有匹配。默认 false；为 false 时 old_string 必须恰好出现一次。需要 old_string。' : 'Replace all matches. Defaults to false; when false, old_string must appear exactly once. Requires old_string.',
       },
       edits: {
         type: 'array',
-        description: 'Non-empty atomic edit list, mutually exclusive with old_string. Each item must contain exactly one edit variant.',
-        items: EDIT_ITEM_SCHEMA,
+        description: zhPrompt ? '非空原子编辑列表，与 old_string 互斥。每项必须恰好包含一个编辑变体。' : 'Non-empty atomic edit list, mutually exclusive with old_string. Each item must contain exactly one edit variant.',
+        items: editItemSchema(zhPrompt),
       },
       ...sandbox.schemaFields,
     },
@@ -823,6 +814,7 @@ interface ResolvedOptions extends EditOptions {
   readLimit: number
   maxLineLength: number
   contextLines: number
+  zhPrompt: boolean
 }
 
 function toEditOptions(options: ResolvedConfig): ResolvedOptions {
@@ -830,7 +822,8 @@ function toEditOptions(options: ResolvedConfig): ResolvedOptions {
     hashLength: options.hashLength,
     maxLineLength: options.maxLineLength,
     contextLines: options.contextLines,
-    readLimit: options.readLimit,
+      readLimit: options.readLimit,
+      zhPrompt: options.zhPrompt,
   }
 }
 
@@ -841,24 +834,26 @@ function createReadTool(
   toolName = 'hashline_read',
 ): ToolDefinition {
   return {
-    name: toolName,
-    description:
-      `Read a UTF-8 text file with LINE:HASH anchors for ${editToolName}. Hashes use ${options.hashLength} hexadecimal characters and include each complete line ending. ` +
-      'Long lines are display-truncated only; their anchors still cover the complete line. The result reports BOM and line-ending style for the accepted snapshot.' +
-      (toolName === 'read' ? ' This is the hashline read tool bound to the built-in read name.' : ''),
-    parameters: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['file_path'],
-      properties: {
-        file_path: { type: 'string', description: 'Path to read, resolved relative to the calling session workspace.' },
-        offset: { type: 'integer', description: 'One-based first line. Defaults to 1.' },
-        limit: {
-          type: 'integer',
-          description: `Maximum lines to return. Defaults to and cannot exceed ${options.readLimit}.`,
+      name: toolName,
+      description: options.zhPrompt
+        ? `用 LINE:HASH 锚点读取 UTF-8 文本文件供 ${editToolName} 使用。哈希使用 ${options.hashLength} 个十六进制字符并包含每个完整行尾。长行仅显示截断；其锚点仍覆盖完整行。结果报告所接受快照的 BOM 和行尾风格。` +
+          (toolName === 'read' ? ' 这是绑定到内置 read 名的 hashline 读取工具。' : '')
+        : `Read a UTF-8 text file with LINE:HASH anchors for ${editToolName}. Hashes use ${options.hashLength} hexadecimal characters and include each complete line ending. ` +
+          'Long lines are display-truncated only; their anchors still cover the complete line. The result reports BOM and line-ending style for the accepted snapshot.' +
+          (toolName === 'read' ? ' This is the hashline read tool bound to the built-in read name.' : ''),
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['file_path'],
+        properties: {
+          file_path: { type: 'string', description: options.zhPrompt ? '要读取的路径，相对于调用会话工作区解析。' : 'Path to read, resolved relative to the calling session workspace.' },
+          offset: { type: 'integer', description: options.zhPrompt ? '从 1 开始的首行。默认 1。' : 'One-based first line. Defaults to 1.' },
+          limit: {
+            type: 'integer',
+            description: options.zhPrompt ? `最多返回的行数。默认为且不超过 ${options.readLimit}。` : `Maximum lines to return. Defaults to and cannot exceed ${options.readLimit}.`,
+          },
         },
       },
-    },
     output: {
       schema: READ_OUTPUT_SCHEMA,
       render: (_args: unknown, value: Record<string, unknown>) => renderRead(value as never),
@@ -950,11 +945,14 @@ function createEditTool(
 ): ToolDefinition {
   return {
     name: toolName,
-    description:
-      `Edit an existing UTF-8 text file. Two input styles: (1) a simple unique literal replacement with old_string/new_string and optional replace_all, or (2) atomic edits anchored to fresh LINE:HASH anchors from ${readToolName}. ` +
-      'All anchors are verified against one stable snapshot before any write; stale anchors and overlapping targets fail without changing the file. ' +
-      'Supported anchored variants are set_line, replace_lines, insert_after, and exact replace. Anchored edits cannot be mixed with replace.',
-    parameters: editParameters(sandbox),
+      description: options.zhPrompt
+        ? `编辑现有 UTF-8 文本文件。两种输入方式：(1) 用 old_string/new_string 及可选的 replace_all 做简单唯一字面替换，或 (2) 锚定到 ${readToolName} 最新 LINE:HASH 锚点的原子编辑。` +
+          '所有锚点在任何写入前针对同一稳定快照校验；过期锚点和重叠目标会在不改变文件的情况下失败。' +
+          '支持的锚定变体为 set_line、replace_lines、insert_after 和精确 replace。锚定编辑不能与 replace 混用。'
+        : `Edit an existing UTF-8 text file. Two input styles: (1) a simple unique literal replacement with old_string/new_string and optional replace_all, or (2) atomic edits anchored to fresh LINE:HASH anchors from ${readToolName}. ` +
+          'All anchors are verified against one stable snapshot before any write; stale anchors and overlapping targets fail without changing the file. ' +
+          'Supported anchored variants are set_line, replace_lines, insert_after, and exact replace. Anchored edits cannot be mixed with replace.',
+      parameters: editParameters(sandbox, options.zhPrompt),
     output: {
       schema: EDIT_OUTPUT_SCHEMA,
       render: (_args: unknown, value: Record<string, unknown>) => renderEdit(value as unknown as EditResultValue, toolName),
@@ -1060,6 +1058,16 @@ function guidanceText(options: ResolvedConfig): string {
   const replaced = options.replaceBuiltinEdit
   const readToolName = replaced ? 'read' : 'hashline_read'
   const editToolName = replaced ? 'edit' : 'hashline_edit'
+  if (options.zhPrompt) {
+    const finalGuidance = replaced
+      ? 'read 和 edit 工具当前是 Hashline 读写器。新建文件用 write。'
+      : '新建文件用 write，简单唯一字面替换用内置 edit。'
+    return (
+      `用 ${editToolName} 配合 old_string/new_string 做简单唯一字面替换，或用 ${readToolName} 后再 ${editToolName}（edits）做对同一文件的多次编辑、多处原子编辑，或在字面替换因空白或行尾而脆弱时使用。` +
+      '从最新输出中精确复制 LINE:HASH 锚点。哈希不匹配意味着未写入；使用错误中给出的更新锚点或重新读取。' +
+      finalGuidance
+    )
+  }
   const finalGuidance = replaced
     ? 'The read and edit tools are currently the Hashline read/editor. Use write for new files.'
     : 'Use write for new files and the built-in edit for a simple unique literal replacement.'
@@ -1077,6 +1085,13 @@ function guidanceText(options: ResolvedConfig): string {
  */
 function readGuidanceText(options: ResolvedConfig): string {
   const readToolName = options.replaceBuiltinEdit ? 'read' : 'hashline_read'
+  if (options.zhPrompt) {
+    return (
+      `使用 ${readToolName} 工具——而不是 cat 之类的 shell 命令——检查 UTF-8 文本文件。` +
+      '结果包含 LINE:HASH 锚点，对每个完整行尾进行哈希。' +
+      '从最新输出中精确复制 LINE:HASH 锚点。使用 offset 和 limit 继续读取大文件。'
+    )
+  }
   return (
     `Use the ${readToolName} tool — not shell commands like cat — to inspect UTF-8 text files. ` +
     'Results include LINE:HASH anchors that hash each complete line ending. ' +
@@ -1091,6 +1106,14 @@ function editGuidanceText(options: ResolvedConfig): string {
   const replaced = options.replaceBuiltinEdit
   const editToolName = replaced ? 'edit' : 'hashline_edit'
   const readToolName = replaced ? 'read' : 'hashline_read'
+  if (options.zhPrompt) {
+    return (
+      `使用 ${editToolName} 工具对现有 UTF-8 文本文件做针对性修改。` +
+      `用 ${editToolName} 配合 old_string/new_string 做简单唯一字面替换，或用 ${readToolName} 后再 ${editToolName}（edits）做对同一文件的多次编辑、多处原子编辑，或在字面替换因空白或行尾而脆弱时使用。` +
+      '从最新输出中精确复制 LINE:HASH 锚点。哈希不匹配意味着未写入；使用错误中给出的更新锚点或重新读取。' +
+      '新建文件用 write。'
+    )
+  }
   return (
     `Use the ${editToolName} tool for targeted changes to existing UTF-8 text files. ` +
     `Use ${editToolName} with old_string/new_string for a simple unique literal replacement, or ${readToolName} followed by ${editToolName} with edits for repeated edits to the same file, multi-location atomic edits, or when literal replacement is fragile because of whitespace or line endings. ` +
