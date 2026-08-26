@@ -1,6 +1,6 @@
 # 开发指南
 
-> 面向贡献者的本地开发、安装与验证。用户说明见 `README.md`，使用细节见 `docs/usage.md`，设计取舍见 `docs/design.md`。
+> 面向贡献者的本插件开发、安装与验证。用户说明见 `README.md`，使用细节见 `docs/usage.md`，设计取舍见 `docs/design.md`。
 
 ## 仓库结构
 
@@ -82,25 +82,17 @@ npm run build
 
 ## Host 热重载
 
-插件使用官方 Cordis HMR 服务精确监视构建产物 `lib/index.js`、`lib/core.js` 和 `lib/presentation.js`。首次组合完成后，Host 源码修改并重新构建后会在线卸载旧 Fiber
-并应用新代码，无需重启 DSH。若部署的 HMR root 已覆盖插件目录则不重复注册。
+本插件的专属 Host 监视目标是 `lib/index.js`、`lib/core.js`、`lib/presentation.js` 与 `lib/runtime-entry.js`；构建后须观察旧 Fiber 卸载、新 Fiber 激活及工具契约变化。
 
-`lib/client.js` 是由 `src/client.ts` 生成的 DSH client module bundle。修改客户端源码后重新执行
-`npm run build:client`。只有同一 DSH checkout 正在运行 `pnpm run dev:web` 并监视该物化 bundle 时，Client HMR 才会自动推送；`file:` 安装需先把新产物同步到 profile 物化副本，再确认 GUI boot entry 的 client revision 已变化。未运行 watcher 时仅刷新页面不会重建或同步 bundle，但同样不得为此重启 Host。
-
-插件不提供自定义热安装 CLI，不复制 `dsh-zh` 的热安装监督器；安装统一使用 `dsh plugin`。
+`lib/client.js` 由 `src/client.ts` 生成。本插件不提供自定义热安装 CLI，也不复制 dsh-zh 的热安装监督器；安装统一使用 `dsh plugin`。
 
 ## 运行环境验证与热更新经验
 
-以下结论以**当前进程的实际能力**为准，不把旧 rev 或 checkout 源码当成运行事实：
+以下结论以**当前进程的实际能力**为准，不把旧 rev 或 checkout 源码当成运行事实。
 
-- 永远先确认现有 `http://127.0.0.1:3080`、当前 boot revision、插件 client revision 以及 Host HMR 日志；不重启 DSH，也不启动替代 Web 服务器。
-- Host 自监视只在 `hmr.registerConfig` / `partialReload` 服务真实可用时成立。当前插件精确监视 `lib/index.js`、`lib/core.js`、`lib/presentation.js` 与 `lib/runtime-entry.js`，构建后应观察旧 Fiber 卸载、新 Fiber 激活及工具契约变化；服务缺失或失败时应明确报告，不能宣称热更新成功。
-- `file:` 安装使用 profile 物化副本；仓库 `lib/` 与 profile `node_modules/.../lib/` 是两个位置。Client 构建成功不等于 GUI 已加载新代码，必须核对被服务文件内容和 boot entry revision；Host 也必须通过真实工具调用验证新 schema/metadata 已进入进程。
-- 不依赖 profile `cordis.patch.yml` 文件 watcher 来触发组合更新；不得为了试探而翻转 manifest，避免只卸载旧 Fiber却无法重挂。安装或卸载始终走 `dsh plugin`。
-- 官方 HMR 的 watcher 默认 `ignored` 含 `**/node_modules`，且依赖收集（`loadDependencies`）也跳过 `/node_modules/`。因此以 profile bundle 形态（`file:` 或 `link:`，模块路径含 node_modules）安装时，官方 HMR 永远不跟踪本插件；插件自身的 HMR 自监视又因 `hmrRootCoversHostModules` 误判“官方 root 已覆盖”而跳过自注册，两头落空，改 `lib/` 后必须重启才能加载。修复：profile bundle 形态强制用 `hmr.registerConfig`（其 `ignored: undefined`）精确自监视；只有 workspace 形态（非 node_modules）且官方 root 覆盖时才跳过自注册。
+- 官方 HMR 在 profile bundle 形态（`file:` 或 `link:`，模块 URL 含 `node_modules`）中可能被默认 ignore 排除；此时必须让本插件以 `hmr.registerConfig`（`ignored: undefined`）精确自监视真实构建产物，不能误判为官方 root 已覆盖。
 - 端到端复验至少覆盖三类历史失败：①过期锚点唯一重定位；②坏锚点回显附近真实锚点；③CRLF 文件用 LF `old_text` 匹配后仍保持原始行尾。测试文件放隔离位置，验收样例若保留在仓库，需明确其用途后再提交。
-- 验证提示词注入：系统提示词不持久化进会话日志正文，但会随每个请求写入 `request/header` 的 `system` 字段。会话导出文件（`.jsonl` 或 `.jsonl.zstd`）里 grep `request/header` 即可看到当次真实组装后的系统提示词；`.jsonl.zstd` 是多帧 zstd，Node 内置 `node:zlib` 的 `zstdDecompressSync` 只解第一帧，需按魔数 `28 B5 2F FD` 扫描并逐帧解压。这是确认“提示词是否重复/缺失”的最直接证据，不要只靠 build/test 通过。
+- 验证提示词注入：系统提示词不持久化进会话日志正文，但会随每个请求写入 `request/header` 的 `system` 字段。完整读取会话导出文件（`.jsonl` 或 `.jsonl.zstd`）后检索 `request/header`，即可看到当次真实组装结果；这是确认“提示词是否重复/缺失”的最直接证据，不要只靠 build/test 通过。
 
 ## 测试与验证
 
@@ -120,13 +112,9 @@ npm pack --dry-run --json
 - `pack --dry-run`：`prepack` 会自动重跑 `check` 与 `test`；发布清单包含 `lib/`（含 `presentation.js`）、
   `docs/`、`cordis.patch.yml` 与 README/LICENSE。
 
-浏览器端改动需要刷新网页；Host 文件（`lib/index.js`、`lib/core.js`、`lib/presentation.js`）在 HMR 服务
-可用时自动热重载，否则按日志提示重启。
-
 ## 当前 GUI 验证路径
 
-真实 GUI 使用现有 `http://127.0.0.1:3080`，不重启 DSH、不启动替代服务器。Host 改动优先走已配置的官方 HMR
-路径（`registerConfig` 精确监视构建产物，重新 `npm run build` 后触发），并以真实工具调用确认；Client 改动必须确认构建产物已同步到当前运行 profile 且 boot entry revision 更新，再刷新或等待 Client HMR。
+Hashline 的 Host 验收必须以真实 `hashline_read` / `hashline_edit` 调用确认新工具契约；Client 验收必须确认实际 profile 已提供新 bundle，并在现有 GUI 中命中对应 keyed toolview。
 
 契约级验证（无需重启即可完成，本改造已通过）：
 

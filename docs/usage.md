@@ -174,7 +174,7 @@ bundle 默认配置位于 `cordis.patch.yml`：
 | `promptGuidance` | true | 是否注册简短工具选用提示；替换内置读写开启时，提示以同名 section 阴影在 Agent 作用域替换内置 `read` / `edit` 原提示 |
 | `zhPrompt` | false | 提示词中文化：注入的提示词与工具说明改为中文，工具名保持英文 |
 
-`cordis.patch.yml` 中的值是部署组合基线。安装并重启后，可在“设置 → 插件 → 插件配置 → 哈希锚点编辑”中
+`cordis.patch.yml` 中的值是部署组合基线。在自然下一次启动或已验证的安装通道生效后，可在“设置 → 插件 → 插件配置 → 哈希锚点编辑”中
 保存用户覆盖；“恢复默认值”会清除用户层字段并重新继承组合基线。设置实时生效。
 
 替换模式只在智能体原本能看到 `read`、`edit`、`hashline_read`、`hashline_edit` 时安装，避免绕过配置的

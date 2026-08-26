@@ -70,7 +70,7 @@ dsh --profile web --dump-config
 
 ## Updates
 
-Run the installation command again to update the dependency and persistent bundle. Refresh the page after browser-side changes. During local `link:` development, Host files hot reload when the DSH HMR service is available; otherwise restart DSH as indicated by its logs.
+Run the installation command again to update the dependency and persistent bundle. Refresh the page after browser-side changes. During local `link:` development, Host files hot reload when the DSH HMR service is available; if unavailable, inspect this plugin's exact self-watch paths and report the failure instead of restarting DSH.
 
 ## Uninstallation
 

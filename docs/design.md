@@ -103,9 +103,7 @@ items schema 因此由模块级常量改为 `editItemSchema(zhPrompt)` 工厂，
 调用作用域持有；设置切换会先释放旧表面，bundle 卸载时再统一清理。`agent/disposed` 发生在 Agent
 scoped effect 已展开之后，因此这里只移除生命周期索引，不重复拥有 Agent Fiber。
 
-Host 源码热更新使用官方 HMR 服务的 `registerConfig()` 精确监视 `lib/index.js` / `lib/core.js`，变化时
-把模块 URL 加入 HMR stash 并调用 `partialReload()`。watcher、debounce timer 和异步 disposer 全部归插件
-Fiber。官方 HMR 的 watcher 默认 `ignored` 含 `**/node_modules`，因此本插件以 profile bundle 形态安装
+本插件以 profile bundle 形态安装
 （模块路径含 node_modules）时永远不会被官方 watcher 跟踪，即使其 root 覆盖本目录；只有 workspace 形态
 （非 node_modules）且官方 root 覆盖时才跳过自注册，否则始终用 `registerConfig`（其 `ignored: undefined`）
 精确自监视。它只负责源码重载，不实现或复制 profile 热安装监督器。
