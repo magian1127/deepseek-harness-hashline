@@ -345,9 +345,11 @@ test('zhPrompt=true 时提示词与工具说明中文化，工具名保持英文
   assert.equal(harness.tools.get('hashline_read').parameters.properties.file_path.description, '要读取的路径，相对于调用会话工作区解析。')
   const editProps = harness.tools.get('hashline_edit').parameters.properties
   assert.equal(editProps.old_string.description, '要替换的字面文本。与 edits 互斥；必须精确匹配。')
-  assert.match(editProps.edits.items.properties.set_line.properties.anchor.description, /从 hashline_read 复制的 LINE:HASH 锚点/)
-  // 提示词 section 中文化。
+  const setLineBranch = editProps.edits.items.oneOf.find(branch => branch.required[0] === 'set_line')
+  assert.match(setLineBranch.properties.set_line.properties.anchor.description, /从 hashline_read 复制的最新 LINE:HASH 锚点/)
+  // 提示词 section 中文化，并明确每个数组项只能放一个操作。
   assert.match(harness.sections.get('tool:hashline').text, /用 hashline_edit 配合 old_string\/new_string/)
+  assert.match(harness.sections.get('tool:hashline').text, /edits 数组的每一项只放一个操作/)
 })
 
 test('zhPrompt=false 时提示词与工具说明保持英文', () => {
@@ -388,6 +390,29 @@ test('全局开关实时卸载并恢复工具和提示词，但保留设置入�
   assert.equal(harness.sections.size, 0)
 })
 
+test('停用状态保留替换开关时，重新启用会立即为现有 Agent 安装严格 edit', () => {
+  const harness = createHarness({ settings: { enabled: false, replaceBuiltinEdit: true } })
+  apply(harness.ctx)
+  assert.equal(harness.viewTool('edit').source, 'tool-fs')
+  assert.equal(harness.tools.size, 0)
+
+  harness.updateSettings({ enabled: true })
+  const strictEdit = harness.viewTool('edit')
+  assert.equal(strictEdit.source, undefined)
+  assert.deepEqual(strictEdit.parameters.required, ['file_path', 'edits'])
+  assert.equal(strictEdit.parameters.properties.old_string, undefined)
+  assert.deepEqual(strictEdit.parameters.properties.edits.items.oneOf.map(branch => branch.required[0]), [
+    'set_line',
+    'replace_lines',
+    'insert_after',
+  ])
+  assert.equal(harness.viewTool('hashline_edit'), undefined)
+
+  harness.updateSettings({ enabled: false })
+  assert.equal(harness.viewTool('edit').source, 'tool-fs')
+  assert.equal(harness.tools.size, 0)
+})
+
 test('数值与提示词设置实时重建工具定义', async () => {
   const harness = createHarness()
   apply(harness.ctx)
@@ -423,14 +448,26 @@ test('replaceBuiltinEdit 对现有 Agent 可逆遮蔽内置 read/edit', async ()
   // read/edit 各用针对性文本，不重复（read 段讲读取、edit 段讲编辑）。
   assert.equal(harness.sections.get('tool:hashline'), undefined)
   assert.match(harness.agent.__scopedPrompt.get('tool:read').text, /LINE:HASH anchors/)
-  assert.ok(!/followed by edit/.test(harness.agent.__scopedPrompt.get('tool:read').text))
-  assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /followed by edit/)
+  assert.ok(!/strictly hash-anchored/.test(harness.agent.__scopedPrompt.get('tool:read').text))
+  assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /strictly hash-anchored/)
+  assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /exactly one set_line, replace_lines, or insert_after/)
+  assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /does not accept old_string\/new_string or replace/)
   assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /Use write for new files/)
 
   const read = await readTool.execute({ file_path: 'sample.txt' }, harness.exec)
+  // 执行器容忍旧适配器物化的精确空哨兵；schema 不公开这些字段，
+  // 任何非空 native 值仍由后面的严格入口测试拒绝。
   await replacement.execute({
     file_path: 'sample.txt',
-    edits: [{ set_line: { anchor: read.lines[1].anchor, new_text: 'B' } }],
+    old_string: '',
+    new_string: '',
+    replace_all: false,
+    edits: [{
+      set_line: { anchor: read.lines[1].anchor, new_text: 'B' },
+      replace_lines: { start_anchor: '', end_anchor: '', new_text: '' },
+      insert_after: { anchor: '', new_text: '' },
+      replace: { old_text: '', new_text: '', all: false },
+    }],
   }, harness.exec)
   assert.equal(harness.content, 'a\nB\n')
 
@@ -458,6 +495,8 @@ test('read/edit 替换覆盖后创建的 Agent，并尊重 preset 隐藏策略',
   assert.equal(harness.viewTool('hashline_edit', editHidden).name, 'hashline_edit')
   assert.equal(harness.viewTool('read', editHidden).source, 'tool-fs')
   assert.equal(harness.viewTool('hashline_read', editHidden).name, 'hashline_read')
+  assert.match(harness.viewTool('hashline_read', editHidden).description, /for hashline_edit/)
+  assert.doesNotMatch(harness.viewTool('hashline_read', editHidden).description, /for edit\./)
 
   const readHidden = harness.createAgent('agent-hidden-read', ['hashline_read'])
   assert.equal(harness.viewTool('edit', readHidden).source, 'tool-fs')
@@ -772,6 +811,30 @@ test('畸形编辑在 sandbox、审批和文件 I/O 前失败', async () => {
   assert.equal(harness.resolveCalls.length, 0)
 })
 
+test('同一 edits 项包含多个操作时在 sandbox、审批和文件 I/O 前拒绝', async () => {
+  const harness = createHarness({ sandboxMode: 'workspace-write' })
+  apply(harness.ctx)
+
+  await assert.rejects(harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{
+      set_line: { anchor: '1:aaaa', new_text: 'A' },
+      replace_lines: { start_anchor: '1:aaaa', end_anchor: '2:bbbb', new_text: 'B' },
+    }],
+    sandbox_permissions: 'danger-full-access',
+    justification: '不应实际发起的审批。',
+  }, harness.exec), error => {
+    assert.equal(error.code, 'HASHLINE_INVALID_ARGUMENT')
+    assert.match(error.message, /edits\[0\] must contain exactly one variant/)
+    assert.match(error.message, /put each operation in its own edits array element/)
+    return true
+  })
+
+  assert.equal(harness.policyRequests.length, 0)
+  assert.equal(harness.approvalRequests.length, 0)
+  assert.equal(harness.resolveCalls.length, 0)
+})
+
 test('无 agent 编辑在策略和 I/O 前失败', async () => {
   const harness = createHarness({ content: 'a\n' })
   apply(harness.ctx)
@@ -787,26 +850,46 @@ test('无 agent 编辑在策略和 I/O 前失败', async () => {
   assert.equal(harness.policyRequests.length, 0)
 })
 
-test('编辑参数 schema 是根级 object 的平面可选输入', () => {
+test('编辑参数 schema 保持根级 object，并用 items.oneOf 强制一项一个操作', () => {
   const harness = createHarness()
   apply(harness.ctx)
   const parameters = harness.tools.get('hashline_edit').parameters
-  // 模型路由要求工具参数根节点为 type: object（根级 oneOf 会被拒绝），
-  // 双输入互斥由 execute 内 normalizeEditRequest 校验。
+  // 模型路由要求工具参数根节点为 type: object（根级 oneOf 会被拒绝）；
+    // 嵌套 items.oneOf 让模型生成结构明确表达每项恰好一个操作；执行器仍会复验。
   assert.equal(parameters.type, 'object')
-  assert.equal(parameters.required[0], 'file_path')
+  assert.deepEqual(parameters.required, ['file_path'])
   assert.equal(parameters.additionalProperties, false)
   for (const key of ['file_path', 'old_string', 'new_string', 'replace_all', 'edits']) {
     assert.ok(key in parameters.properties, `missing ${key}`)
   }
   const item = parameters.properties.edits.items
-  // items 同样为平面 object：四种变体互斥由 parseEditEntries 运行时校验。
-  assert.equal(item.type, 'object')
-  assert.equal(item.additionalProperties, false)
-  for (const key of ['set_line', 'replace_lines', 'insert_after', 'replace']) {
-    assert.ok(key in item.properties, `missing ${key}`)
-    assert.ok(item.properties[key].type === 'object')
+  assert.equal(item.type, undefined)
+  assert.equal(item.oneOf.length, 4)
+  assert.deepEqual(item.oneOf.map(branch => branch.required[0]), [
+    'set_line',
+    'replace_lines',
+    'insert_after',
+    'replace',
+  ])
+  for (const branch of item.oneOf) {
+    const [kind] = branch.required
+    assert.equal(branch.type, 'object')
+    assert.equal(branch.additionalProperties, false)
+    assert.deepEqual(Object.keys(branch.properties), [kind])
   }
+
+  const strictHarness = createHarness({ settings: { replaceBuiltinEdit: true } })
+  apply(strictHarness.ctx)
+  const strictParameters = strictHarness.viewTool('edit').parameters
+  assert.deepEqual(strictParameters.required, ['file_path', 'edits'])
+  assert.equal(strictParameters.properties.old_string, undefined)
+  assert.equal(strictParameters.properties.new_string, undefined)
+  assert.equal(strictParameters.properties.replace_all, undefined)
+  assert.deepEqual(strictParameters.properties.edits.items.oneOf.map(branch => branch.required[0]), [
+    'set_line',
+    'replace_lines',
+    'insert_after',
+  ])
 })
 
 // ---------------------------------------------------------------------------
@@ -977,6 +1060,11 @@ test('hashline_edit 拒绝混合或缺失的两种输入', async () => {
     new_string: 'b',
     edits: [{ set_line: { anchor: read.lines[0].anchor, new_text: 'b' } }],
   }, harness.exec), error => error.code === 'HASHLINE_INVALID_ARGUMENT')
+  await assert.rejects(tool.execute({
+    file_path: 'sample.txt',
+    old_string: 42,
+    edits: [{ set_line: { anchor: read.lines[0].anchor, new_text: 'b' } }],
+  }, harness.exec), error => error.code === 'HASHLINE_INVALID_ARGUMENT')
   await assert.rejects(tool.execute({ file_path: 'sample.txt' }, harness.exec),
     error => error.code === 'HASHLINE_INVALID_ARGUMENT')
   assert.equal(harness.policyRequests.length, 0)
@@ -1139,13 +1227,13 @@ test('替换模式下 scoped read/edit 的展示契约与全局工具一致', as
   assert.equal(readView.lines[0].hash, readResult.lines[0].hash)
   assert.equal(readView.lines[0].text, 'alpha')
 
-  const pending = editTool.presentCall({ file_path: 'sample.txt', old_string: 'beta', new_string: 'gamma' })
-  assert.equal(pending.card, 'diff')
-  const editResult = await editTool.execute({
+  const editArgs = {
     file_path: 'sample.txt',
-    old_string: 'beta',
-    new_string: 'gamma',
-  }, harness.exec)
+    edits: [{ set_line: { anchor: readResult.lines[1].anchor, new_text: 'gamma' } }],
+  }
+  const pending = editTool.presentCall(editArgs)
+  assert.equal(pending.card, 'generic')
+  const editResult = await editTool.execute(editArgs, harness.exec)
   assert.equal(harness.content, 'alpha\ngamma\n')
   const editView = editTool.presentResult({ file_path: 'sample.txt' }, {
     content: editTool.output.render({}, editResult),
@@ -1157,14 +1245,18 @@ test('替换模式下 scoped read/edit 的展示契约与全局工具一致', as
   assert.match(editView.diffs[0].newText, /gamma/)
 })
 
-test('替换模式下 scoped edit 的错误消息使用 edit/read 工具名', async () => {
+test('替换模式下 scoped edit 使用 edit/read 错误名并严格拒绝无锚点输入', async () => {
   const harness = createHarness({ content: 'alpha\nbeta\n', settings: { replaceBuiltinEdit: true } })
   apply(harness.ctx)
+  const readTool = harness.viewTool('read')
   const editTool = harness.viewTool('edit')
 
   // stale 锚点错误：前缀与指引都使用 scoped 名，而不是 hashline_edit/hashline_read。
-  const read = await harness.viewTool('read').execute({ file_path: 'sample.txt' }, harness.exec)
-  await editTool.execute({ file_path: 'sample.txt', old_string: 'beta', new_string: 'BETA' }, harness.exec)
+  const read = await readTool.execute({ file_path: 'sample.txt' }, harness.exec)
+  await editTool.execute({
+    file_path: 'sample.txt',
+    edits: [{ set_line: { anchor: read.lines[1].anchor, new_text: 'BETA' } }],
+  }, harness.exec)
   await assert.rejects(editTool.execute({
     file_path: 'sample.txt',
     edits: [{ set_line: { anchor: read.lines[1].anchor, new_text: 'x' } }],
@@ -1177,16 +1269,24 @@ test('替换模式下 scoped edit 的错误消息使用 edit/read 工具名', as
     return true
   })
 
-  // 混合编辑错误同样使用 scoped 名。
+  const resolvesBeforeUnanchored = harness.resolveCalls.length
   await assert.rejects(editTool.execute({
     file_path: 'sample.txt',
-    edits: [
-      { set_line: { anchor: read.lines[0].anchor, new_text: 'A' } },
-      { replace: { old_text: 'beta', new_text: 'BETA' } },
-    ],
+    old_string: 'BETA',
+    new_string: 'beta',
   }, harness.exec), error => {
-    assert.equal(error.code, 'HASHLINE_MIXED_EDIT_MODES')
-    assert.match(error.message, /^edit: anchor-verified edits and replace cannot be mixed/)
+    assert.equal(error.code, 'HASHLINE_INVALID_ARGUMENT')
+    assert.match(error.message, /requires fresh LINE:HASH anchors/)
     return true
   })
+  await assert.rejects(editTool.execute({
+    file_path: 'sample.txt',
+    edits: [{ replace: { old_text: 'BETA', new_text: 'beta' } }],
+  }, harness.exec), error => {
+    assert.equal(error.code, 'HASHLINE_INVALID_ARGUMENT')
+    assert.match(error.message, /^edit only accepts LINE:HASH-anchored/)
+    return true
+  })
+  assert.equal(harness.resolveCalls.length, resolvesBeforeUnanchored)
+  assert.equal(harness.content, 'alpha\nBETA\n')
 })

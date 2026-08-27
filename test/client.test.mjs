@@ -196,12 +196,14 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
   assert.equal(localeRegistrations[0].namespace, 'settings.hashline')
   assert.ok(localeRegistrations[0].dictionaries.zh)
   assert.ok(localeRegistrations[0].dictionaries.en)
-  const dictionaries = [localeRegistrations[0].dictionaries.zh, localeRegistrations[0].dictionaries.en]
-  for (const dictionary of dictionaries) {
-    assert.ok(Object.values(dictionary).every(value => !/[A-Za-z]/.test(value)))
-  }
-  assert.equal(localeRegistrations[0].dictionaries.zh.replaceBuiltinEdit, '替换内置读写')
-  assert.equal(localeRegistrations[0].dictionaries.en.replaceBuiltinEdit, '替换内置读写')
+  const zhDictionary = localeRegistrations[0].dictionaries.zh
+  const enDictionary = localeRegistrations[0].dictionaries.en
+  assert.deepEqual(Object.keys(zhDictionary).sort(), Object.keys(enDictionary).sort())
+  assert.equal(zhDictionary.title, '哈希锚点编辑')
+  assert.equal(zhDictionary.replaceBuiltinEdit, '替换内置读写')
+  assert.equal(enDictionary.title, 'Hashline editing')
+  assert.equal(enDictionary.replaceBuiltinEdit, 'Replace built-in read/edit')
+  assert.equal(enDictionary.save, 'Save')
   assert.equal(slotRegistrations.length, 3)
   assert.deepEqual(slotRegistrations[0].options, {
     name: 'settings.plugin.item',

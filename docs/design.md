@@ -12,13 +12,17 @@ stale read，并把多处修改作为一个原子请求处理。它不判断代�
 ## 工具边界
 
 - 始终注册全局 `hashline_read` / `hashline_edit`，默认不覆盖内置工具；
-- `hashline_edit` 接受两种互斥输入：原版风格（`old_string` / `new_string` / `replace_all`，转换为内部
+- 显式 `hashline_edit` 是兼容入口，接受两种互斥输入：文本替换（`old_string` / `new_string` / `replace_all`，转换为内部
   `replace` 计划）与 Hashline 风格（`edits` 数组）；两种输入走同一条稳定读取、版本 CAS 与写前验证路径。
-  参数 schema 为**平面可选 object**（根节点 `type: "object"`，`file_path` 必填，其余可选）：真实运行环境
-  的模型路由拒绝无 `type` 的根级 oneOf 节点（实测 `Invalid schema for function 'hashline_edit' ...
-  got 'type: null'`），互斥与必填由 `normalizeEditRequest` 在 execute 内校验，`edits.items` 的四变体
-  互斥由 `parseEditEntries` 运行时校验，schema 层只保留类型信息；
-- `replaceBuiltinEdit` 显式开启时，只在具体智能体的自身作用域注册哈希锚点 `read` 与 `edit`，可逆遮蔽其继承的原工具；
+  参数根 schema 保持 `type: "object"`（真实模型路由会拒绝无 `type` 的根级 oneOf）；顶层互斥由
+  `normalizeEditRequest` 在 execute 内校验。`edits.items` 使用嵌套 `oneOf`，每个分支是只含一个操作键的封闭对象，
+  让模型面对的 schema 明确表达“一项一个操作”；原始 `ctx.tools.register` 路径不会自动校验输入值，真正的执行时强制仍由
+  `parseEditEntries` 完成，并防御旧回放和直接调用；
+- `replaceBuiltinEdit` 显式开启时，只在具体智能体的自身作用域注册严格哈希锚定的 `read` 与 `edit`，可逆遮蔽其继承的原工具。
+  该 `edit` 的 schema 要求非空 `edits`，只含 `set_line` / `replace_lines` / `insert_after`；不公开且在执行层拒绝
+  `old_string` / `new_string` / `replace_all` 和无锚点 `replace`，确保替换模式不能绕开行哈希；
+- 全局 `hashline_read` 的说明始终配对全局 `hashline_edit`；只有替换整组安装成功的 Agent scoped `read` 才配对严格 `edit`。
+  因可见性限制而跳过替换时，不得让全局读取说明把模型导向内置文本 `edit`；
 - 替换前确认该智能体的 `read`、`edit`、`hashline_read`、`hashline_edit` 均可见，避免绕过配置限制；同层重名时保留已有定义并回滚整组替换；
 - 不修改或卸载 `tool-fs`；
 - V1 不做 symbol、AST、fuzzy matching、grep 锚点或上下文卫生跟踪；
@@ -83,8 +87,8 @@ BOM 作为文件元数据单独保存，不进入首行哈希。这样首行显�
 
 提示词注入分两种模式：默认模式全局注册 `tool:hashline`（order 103）；`replaceBuiltinEdit` 开启时改为在
 每个 Agent 的自身作用域注册同名的 `tool:read` / `tool:edit` section（order 100 / 102），利用 DSH
-system-prompt 的 scope 层同名阴影规则替换内置原文，避免“原文 + hashline 说明”重复出现；关闭替换后
-scoped 阴影随整组替换 disposer 撤除，恢复全局 `tool:hashline`。
+system-prompt 的 scope 层同名阴影规则替换内置原文。严格 `tool:edit` 文本要求先读、每个数组项一个锚定操作，
+并明确禁用文本替换与 `replace`；关闭替换后 scoped 阴影随整组 disposer 撤除，恢复全局 `tool:hashline`。
 
 阴影文本必须按工具拆分（`readGuidanceText` / `editGuidanceText`），不能把同一段合并说明同时塞进
 `tool:read` 与 `tool:edit`：两段完全相同的文本会在组装后的系统提示词里重复出现，重蹈“多出来”的旧。
@@ -132,8 +136,8 @@ React、ToolResult 或 DSH 运行时实例。
   实际写入前后的文本计算紧凑 hunks（展示层把 CRLF 归一到 LF、忽略 BOM、丢弃 unified diff 的缺尾换行
   标记），并按 hunk 的原始 `oldStart/newStart` 范围附带逐行 `oldHashes/newHashes`；哈希仍从真实行正文加真实行尾计算，不从 LF 归一后的 diff 文本反推。它不保存完整 before/after；`output.presentationMeta` 只投影 `{ diffs }` 持久化，`presentResult`
   从 meta 还原 `card: 'diff'`。每个 hunk 使用调用方的 `file_path`，不把后端解析后的绝对 `displayPath` 暴露给卡片；diff 计算只影响展示，实际写入仍走 `core.ts` 文本模型。
-- 原生 `read` / `edit` 的展示语义：`presentCall` 对原版风格与单条 `edits[].replace` 显示 pending diff
-  （参数自带 old/new）；锚点编辑没有旧文本可读，保持通用编辑卡，不伪造 diff。
+- 工具调用展示语义：显式 `hashline_edit` 的兼容文本替换与单条 `edits[].replace` 显示 pending diff
+  （参数自带 old/new）；锚点编辑及替换内置工具后的严格 `edit` 没有旧文本可读，保持通用编辑卡，不伪造 diff。
 - 所有展示都可失败回退：错误、无变化、过期锚点、stale version、畸形回放 meta 或 envelope 不匹配
   最终都由宿主渲染普通文本结果。`presentationMeta` 本身始终返回 lossless JSON（无变化为 `{ diffs: [] }`），
   `presentResult` 再对空/畸形数据返回 `undefined`，避免成功调用被 ToolRuntime 改写为输出错误。

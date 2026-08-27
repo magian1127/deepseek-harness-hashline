@@ -106,8 +106,8 @@ npm pack --dry-run --json
 
 - `check`：先执行完整 TypeScript/客户端构建，再对生成的 `lib/` 和 `test/` 做语法检查。
 - `test`：运行四组回归（core、presentation、plugin、client），覆盖 BOM、CRLF/LF、末尾换行、删除、批量顺序、重叠拒绝、
-  锚点过期、稳定读取、版本竞争、沙箱策略、一次性审批、文件观察事件、工具架构、双输入 schema、读取 envelope、
-  diff meta 与回放回退、设置热切换、智能体作用域替换和客户端卡片。测试用 `test/fixtures/dsh-home` 假 profile
+  锚点过期、稳定读取、版本竞争、沙箱策略、一次性审批、文件观察事件、根级 object + `edits.items.oneOf` schema、
+  严格替换入口拒绝无锚点调用、读取 envelope、diff meta 与回放回退、设置热切换、智能体作用域替换和客户端卡片。测试用 `test/fixtures/dsh-home` 假 profile
   隔离 DSH 运行时 peer，不依赖真实安装。
 - `pack --dry-run`：`prepack` 会自动重跑 `check` 与 `test`；发布清单包含 `lib/`（含 `presentation.js`）、
   `docs/`、`cordis.patch.yml` 与 README/LICENSE。
@@ -130,8 +130,8 @@ Hashline 的 Host 验收必须以真实 `hashline_read` / `hashline_edit` 调用
 呈现验收点（需 Host 新代码进入运行进程后执行）：
 
 1. `hashline_read` 成功结果使用原生 `ReadBlock`：gutter 文本严格为 `LINE|HASH`，整体继承灰色、`aria-hidden` 和 `user-select: none`；正文另存于 content span，保持可选择、可复制与语法高亮。
-2. `hashline_edit` 原版风格调用在运行前显示 pending diff；成功后显示基于真实前后文本的原生风格 diff 卡。
-3. 锚点 `edits` 调用保持通用编辑卡；成功后同样显示真实 diff 卡。
+2. 显式 `hashline_edit` 的兼容文本替换在运行前显示 pending diff；成功后显示基于真实前后文本的原生风格 diff 卡。
+3. 锚点 `edits` 调用及替换内置工具后的严格 `edit` 保持通用编辑卡；成功后同样显示真实 diff 卡。
 4. 编辑删除/新增行的 gutter 严格为 `-|旧HASH` / `+|新HASH`，计算样式为灰色、`user-select: none` 且 `aria-hidden`；正文 span 保持 `user-select: auto` 和红/绿语义。跨 gutter 建立 Selection 时，`selection.toString()` 必须只包含正文。
 5. 编辑卡复制按钮序列化路径、`- `/`+ ` 与正文，不包含 Hashline gutter；这是内容复制，不是屏幕文本转储。
 6. 错误路径（stale 锚点、sandbox 拒绝）回退普通文本，不出现虚假的成功 diff。
@@ -139,11 +139,22 @@ Hashline 的 Host 验收必须以真实 `hashline_read` / `hashline_edit` 调用
 
 排障时不要把“构建通过”“测试通过”“HTTP 已供应新 bundle”当作 GUI 验收。最低证据链是：boot entry revision 已更新、页面无插件启动错误、真实工具写入成功、展开后的 DOM 命中目标 keyed toolview、计算样式和 Selection/复制结果符合契约。
 
-真实环境 schema 约束（实测发现）：模型路由要求工具参数 schema 根节点必须是 `type: "object"`，
+真实环境 schema 约束（实测发现）：模型路由要求工具参数 schema **根节点**必须是 `type: "object"`；
 无 `type` 的根级 `oneOf` 会在工具列表下发时被模型 API 拒绝（`Invalid schema for function ... got
-'type: null'`），并导致插件工具整体不可用。工具参数 schema（含 `edits.items`）必须保持平面 object，
-互斥与必填一律在 execute 内运行时校验（`normalizeEditRequest` / `parseEditEntries`）。output schema
-不进模型请求，可以继续使用 oneOf（如 `oldText: null` 联合）。
+'type: null'`），并导致插件工具整体不可用。这个限制不能外推到嵌套节点：DSH 输入 schema 支持
+`edits.items: { oneOf: [...] }`，插件用四个（严格替换入口为三个）封闭对象分支表达每项恰好一个操作；
+执行器仍以 `normalizeEditRequest` / `parseEditEntries` 防御旧回放和直接调用。output schema 不进模型请求，可继续使用 oneOf。
+
+### 严格替换的真实运行态复验
+
+重启 DSH 后，以 active profile 和实际新建 Agent 的工具契约为准，确认 `hashline.enabled=true`、`replaceBuiltinEdit=true`，并确认 profile 中的 Hashline 包指向当前构建产物。真实验收只使用内置名称 `read` / `edit` 操作隔离测试文件：
+
+- `read` 输出最新 `LINE:HASH` 锚点；`edit` 的参数根为 `type: "object"`，必填 `file_path` / `edits`，`edits.items.oneOf` 是三个封闭的 `set_line` / `replace_lines` / `insert_after` 分支，且不公开 `old_string` / `new_string` / `replace`。
+- 一次 `edit` 可以携带两个独立的 `set_line` 数组项，并在同一稳定快照上成功写入；本次实机结果为 `ALPHA`、`beta`、`GAMMA`，没有重试，也没有退回文本替换。
+- 这证明当前模型路由可接受嵌套 `items.oneOf`；根级 `oneOf` 仍不可用。静态构建、单测和 HTTP bundle 响应都不能替代真实工具 schema、真实调用和真实文件结果的 Host 验收。
+- 原始失败的关键经验是：同一 `edits[i]` 塞入多个变体会连续失败，模型随后转用 `old_string/new_string` 虽可通过文件版本 CAS，却没有绑定最近读取的 `LINE:HASH`。因此严格替换必须同时收紧 schema、工具说明、scoped prompt 和执行层；显式 `hashline_edit` 才保留兼容文本替换。
+
+测试文件验收后立即删除，避免把临时路径和用户数据带入仓库或发布包。
 
 ## 包形态
 

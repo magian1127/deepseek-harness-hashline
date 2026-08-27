@@ -16,22 +16,22 @@
 
 **DeepSeek Harness hash-anchored file editing plugin**: provides `hashline_read` and `hashline_edit`, binding edits to the exact lines most recently read by the model through `LINE:HASH` anchors. This helps detect stale reads, supports multiple edits in one request, and makes file changes mechanically reliable.
 
-`hashline_edit` accepts two mutually exclusive input styles: a simple unique literal replacement using the original-style parameters (`old_string` / `new_string` / `replace_all`), or the `edits` list for anchored edits. In the default mode, the plugin supplements the built-in `read` and `edit` tools. New files should still use `write`. You can also enable **Replace built-in read/edit** so an agent that is allowed to edit can use Hashline semantics through the `read` and `edit` names.
+The explicit `hashline_edit` tool accepts two mutually exclusive input styles: compatibility parameters (`old_string` / `new_string` / `replace_all`) for a simple unique literal replacement, or the `edits` list for anchored edits. In the default mode, the plugin supplements the built-in `read` and `edit` tools. New files should still use `write`. When **Replace built-in read/edit** is enabled, allowed agents instead receive strict `read` / `edit` surfaces: `edit` requires fresh `LINE:HASH` anchors and does not expose literal-replacement parameters or unanchored `replace`.
 
 ## Features
 
 | Capability | Description |
 | --- | --- |
 | `LINE:HASH` reads | Returns `LINE\|HASH  text` records with model-visible EOL/BOM metadata. The default hash covers the complete line and its real line ending. |
-| Original-style edits | Simple unique literal replacement via `old_string` / `new_string` / `replace_all`, routed through the same safe write pipeline. |
-| Three anchored edits | `set_line`, `replace_lines`, and `insert_after` |
-| Exact replacement escape hatch | `replace` inside `edits` performs strict literal matching and requires a unique match by default. |
+| Compatible literal replacement | Explicit `hashline_edit` supports `old_string` / `new_string` / `replace_all` for a simple unique replacement through the safe write pipeline. |
+| Three anchored edits | `set_line`, `replace_lines`, and `insert_after`; every `edits` array element contains exactly one operation. |
+| Exact replacement escape hatch | `replace` inside explicit `hashline_edit` performs strict literal matching and requires a unique match by default. |
 | Atomic batch edits | Validates all anchors first, rejects overlaps, and then writes atomically. |
 | Version CAS protection | Uses the DSH file version to prevent concurrent changes between validation and writing. |
 | Text fidelity | Preserves the UTF-8 BOM, untouched regions of mixed-EOL files, LF/CRLF style, and the final-newline state. |
 | Stale-anchor recovery | Returns nearby current lines and fresh anchors when an anchor is no longer valid. |
 | Native result cards | Successful reads reuse DSH native `ReadBlock`: the whole `LINE|HASH` is one gray, unselectable gutter while the text remains separately selectable and syntax-highlighted. Successful edits use native-style diff chrome: removed/added rows show gray, unselectable `-|OLD_HASH` / `+|NEW_HASH` gutters while preserving red/green diff semantics and content-only selection/copy. |
-| Reversible replacement | Agent-scoped built-in tool replacement is reversible and is cleaned up with the owning Cordis Fiber. |
+| Reversible strict replacement | The Agent-scoped `edit` accepts only fresh `LINE:HASH` anchors; the replacement remains reversible and is cleaned up with the owning Cordis Fiber. |
 | Chinese prompt guidance | When enabled, the injected prompt guidance and tool descriptions are in Chinese while tool names stay in English. |
 
 ## Requirements
@@ -90,11 +90,11 @@ The plugin does not register capabilities beyond its model tools, upload data, o
 
 ## FAQ
 
-**How is this different from the built-in `read` and `edit`?** The built-in tools operate on line numbers and text. Hashline binds an anchored edit to the hash anchor of the exact content most recently read, detects stale reads, and handles multiple edits as one atomic request. For a simple unique literal replacement you can also pass `old_string` / `new_string` directly; it goes through the same stable read and version CAS as anchored edits. Hashline reads use the DSH native read card, while edits use a native-style diff card with Hashline gutters.
+**How is this different from the built-in `read` and `edit`?** Hashline binds an anchored edit to the exact content most recently read, detects stale reads, and handles multiple edits as one atomic request. Explicit `hashline_edit` keeps `old_string` / `new_string` compatibility for simple cases and routes it through the stable-read and version-CAS pipeline. The `edit` surface installed by built-in replacement is strict and rejects those unanchored parameters. Hashline reads use the DSH native read card, while edits use a native-style diff card with Hashline gutters.
 
 **Can a short hash collide?** A short hash has a theoretical collision probability. The default 4 hexadecimal characters provide a 16-bit check and are combined with the line number and file-level version CAS. Increase `hashLength` for higher-risk deployments.
 
-**How does Replace built-in read/edit work?** When enabled, an allowed agent sees `read` and `edit` using Hashline anchors, while `hashline_read` and `hashline_edit` are hidden. The original tools are restored when the setting is disabled. Replacement is installed only when the agent already has access to `read`, `edit`, `hashline_read`, and `hashline_edit`, so it cannot bypass visibility restrictions. When replacement is active, the built-in `read` / `edit` system-prompt guidance is also replaced in each allowed agent's scope by the same-named Hashline guidance, so the instructions never appear twice; disabling the setting restores the original guidance.
+**How does Replace built-in read/edit work?** When enabled, an allowed agent sees strict `read` and `edit` surfaces while `hashline_read` and `hashline_edit` are hidden. Call `read` before each change and use its fresh anchors. Every `edit.edits` array element must contain exactly one `set_line`, `replace_lines`, or `insert_after`; `old_string` / `new_string` and `replace` are rejected. Disabling the setting restores the original tools. Replacement is installed only when all four original capabilities are already visible, so it cannot bypass visibility restrictions. The same Agent scope also replaces the built-in prompt guidance and restores it when disabled.
 
 ## Development documentation
 

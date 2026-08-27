@@ -565,42 +565,65 @@ function renderEdit(value: EditResultValue, toolName = 'hashline_edit'): unknown
   return [{ type: 'text', text: `${summary}\nUpdated anchors:\n${value.preview.map(formatLine).join('\n')}` }]
 }
 
-// 四种编辑变体的 items schema：参数 description 随 zhPrompt 中文化，工具名不变。
-// 平面 items schema：真实模型路由不接受无 `type` 的 oneOf 节点（根级实测被拒）。
-// 四种变体互斥由 parseEditEntries 在 execute 内校验（每个条目恰好一个变体键）。
-function editItemSchema(zhPrompt: boolean): JsonSchema {
-  const anchorDesc = zhPrompt ? '从 hashline_read 复制的 LINE:HASH 锚点，例如 "42:f7a9"。' : 'LINE:HASH anchor copied from hashline_read, for example "42:f7a9".'
+type EditInputMode = 'hybrid' | 'anchored'
+
+// 工具参数根节点必须保持 type: object；数组项可以使用 DSH 已支持的嵌套 oneOf。
+// 把每种操作放进独立分支，令模型在生成参数时就看到“一项一个操作”的结构；
+// parseEditEntries 仍在执行前做同样校验，防御旧回放和绕过 schema 的直接调用。
+function editItemSchema(zhPrompt: boolean, readToolName: string, inputMode: EditInputMode): JsonSchema {
+  const anchorDesc = zhPrompt
+    ? `从 ${readToolName} 复制的最新 LINE:HASH 锚点，例如 "42:f7a9"。`
+    : `Fresh LINE:HASH anchor copied from ${readToolName}, for example "42:f7a9".`
   const setLineNewText = zhPrompt ? '替换内容；空字符串删除该行。' : 'Replacement content; an empty string deletes the anchored line.'
-  const startAnchor = zhPrompt ? '包含范围内首行的锚点。' : 'Anchor for the first line in the inclusive range.'
-  const endAnchor = zhPrompt ? '包含范围内末行的锚点。' : 'Anchor for the last line in the inclusive range.'
+  const startAnchor = zhPrompt ? '包含范围内首行的最新锚点。' : 'Fresh anchor for the first line in the inclusive range.'
+  const endAnchor = zhPrompt ? '包含范围内末行的最新锚点。' : 'Fresh anchor for the last line in the inclusive range.'
   const rangeNewText = zhPrompt ? '替换内容；空字符串删除该范围。' : 'Replacement content; an empty string deletes the range.'
-  const insertAnchor = zhPrompt ? '在其后插入内容的那一行的锚点。' : 'Anchor of the line after which content is inserted.'
+  const insertAnchor = zhPrompt ? '在其后插入内容的那一行的最新锚点。' : 'Fresh anchor of the line after which content is inserted.'
   const insertNewText = zhPrompt ? '要插入的内容。不能为空。' : 'Content to insert. It must not be empty.'
   const oldText = zhPrompt ? '要替换的字面文本。不能为空。' : 'Literal text to replace. It must not be empty.'
   const newText = zhPrompt ? '替换后的字面文本。' : 'Literal replacement text.'
   const all = zhPrompt ? '替换每个匹配。默认 false，即要求恰好一个匹配。' : 'Replace every occurrence. The default is false, which requires exactly one match.'
-  return {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      set_line: {
-        type: 'object', additionalProperties: false, required: ['anchor', 'new_text'],
-        properties: { anchor: { type: 'string', description: anchorDesc }, new_text: { type: 'string', description: setLineNewText } },
-      },
-      replace_lines: {
-        type: 'object', additionalProperties: false, required: ['start_anchor', 'end_anchor', 'new_text'],
-        properties: { start_anchor: { type: 'string', description: startAnchor }, end_anchor: { type: 'string', description: endAnchor }, new_text: { type: 'string', description: rangeNewText } },
-      },
-      insert_after: {
-        type: 'object', additionalProperties: false, required: ['anchor', 'new_text'],
-        properties: { anchor: { type: 'string', description: insertAnchor }, new_text: { type: 'string', description: insertNewText } },
-      },
-      replace: {
-        type: 'object', additionalProperties: false, required: ['old_text', 'new_text'],
-        properties: { old_text: { type: 'string', description: oldText }, new_text: { type: 'string', description: newText }, all: { type: 'boolean', description: all } },
+  const variants: JsonSchema[] = [
+    {
+      type: 'object', additionalProperties: false, required: ['set_line'],
+      properties: {
+        set_line: {
+          type: 'object', additionalProperties: false, required: ['anchor', 'new_text'],
+          properties: { anchor: { type: 'string', description: anchorDesc }, new_text: { type: 'string', description: setLineNewText } },
+        },
       },
     },
+    {
+      type: 'object', additionalProperties: false, required: ['replace_lines'],
+      properties: {
+        replace_lines: {
+          type: 'object', additionalProperties: false, required: ['start_anchor', 'end_anchor', 'new_text'],
+          properties: { start_anchor: { type: 'string', description: startAnchor }, end_anchor: { type: 'string', description: endAnchor }, new_text: { type: 'string', description: rangeNewText } },
+        },
+      },
+    },
+    {
+      type: 'object', additionalProperties: false, required: ['insert_after'],
+      properties: {
+        insert_after: {
+          type: 'object', additionalProperties: false, required: ['anchor', 'new_text'],
+          properties: { anchor: { type: 'string', description: insertAnchor }, new_text: { type: 'string', description: insertNewText } },
+        },
+      },
+    },
+  ]
+  if (inputMode === 'hybrid') {
+    variants.push({
+      type: 'object', additionalProperties: false, required: ['replace'],
+      properties: {
+        replace: {
+          type: 'object', additionalProperties: false, required: ['old_text', 'new_text'],
+          properties: { old_text: { type: 'string', description: oldText }, new_text: { type: 'string', description: newText }, all: { type: 'boolean', description: all } },
+        },
+      },
+    })
   }
+  return { oneOf: variants }
 }
 
 const LINE_OUTPUT_SCHEMA: JsonSchema = {
@@ -681,17 +704,20 @@ const EDIT_OUTPUT_SCHEMA: JsonSchema = {
 }
 
 /**
- * 解析编辑请求为统一的内部形式：native 分支（old_string/new_string）转换为
- * `replace` 计划（replace_all → all），Hashline 分支（edits）原样透传。
- * 两种分支都提供或都缺失时在 sandbox、审批与文件 I/O 前拒绝，保证
- * `planEdits` 之后只有一条执行路径，不复制安全逻辑。
+ * 解析编辑请求为统一的内部形式：hybrid 入口把 native 分支
+ * （old_string/new_string）转换为 `replace` 计划，或透传 edits；anchored
+ * 入口只接受非空 edits。互斥、缺失和无锚点输入都在 sandbox、审批与
+ * 文件 I/O 前拒绝，保证 planEdits 之后只有一条安全执行路径。
  */
 interface NormalizedEditRequest {
   filePath: string
   rawEdits: RawEdit[]
 }
 
-function normalizeEditRequest(args: Record<string, unknown>): NormalizedEditRequest {
+function normalizeEditRequest(
+  args: Record<string, unknown>,
+  inputMode: EditInputMode = 'hybrid',
+): NormalizedEditRequest {
   const filePath = requirePath(args.file_path)
   const hasOldString = typeof args.old_string === 'string' && args.old_string.length > 0
   const hasNewString = typeof args.new_string === 'string' && (args.new_string.length > 0 || hasOldString)
@@ -715,8 +741,22 @@ function normalizeEditRequest(args: Record<string, unknown>): NormalizedEditRequ
   const hasEdits = rawEdits !== undefined && rawEdits.length > 0
   // 某些 Tool 适配器会把 schema 中未选用的可选字段物化为空默认值：
   // old_string/new_string -> ''、replace_all -> false、edits -> []，并把 union
-  // 内未选中的编辑变体物化成空对象。清除这些空哨兵后再判定输入样式。
-  const hasNative = hasOldString || hasNewString || hasReplaceAll
+  // 内未选中的编辑变体物化成空对象。只忽略这些精确空哨兵；错误类型或
+  // 其它非空值仍算 native 输入，不能在带有效 edits 时被静默丢弃。
+  const hasNativePayload =
+    (args.old_string !== undefined && args.old_string !== '') ||
+    (args.new_string !== undefined && args.new_string !== '') ||
+    (args.replace_all !== undefined && args.replace_all !== false)
+  const hasNative = hasOldString || hasNewString || hasReplaceAll || hasNativePayload
+  if (inputMode === 'anchored') {
+    if (hasNative) {
+      invalidArgument('this edit surface requires fresh LINE:HASH anchors; old_string/new_string are not accepted')
+    }
+    if (!hasEdits) {
+      invalidArgument('edits must be a non-empty array of LINE:HASH-anchored operations')
+    }
+    return { filePath, rawEdits: rawEdits as RawEdit[] }
+  }
   if (hasNative === hasEdits) {
     invalidArgument(
       'provide exactly one input style: old_string/new_string (simple unique literal replacement) or edits (anchored atomic edits)',
@@ -753,35 +793,49 @@ function singleReplaceDiff(filePath: string, entry: unknown): FileDiff[] | undef
   return [{ path: filePath, oldText: old_text || null, newText: new_text }]
 }
 
-function editParameters(sandbox: SandboxController, zhPrompt: boolean): JsonSchema {
+function editParameters(
+  sandbox: SandboxController,
+  zhPrompt: boolean,
+  readToolName: string,
+  inputMode: EditInputMode,
+): JsonSchema {
   const filePathField = { type: 'string', description: zhPrompt ? '要编辑的路径，由 DSH 文件系统后端解析。' : 'Path to edit, resolved by the DSH filesystem backend.' }
-  // 平面可选 schema：真实运行环境的模型路由要求工具参数根节点必须是
-  // `type: "object"`，根级 oneOf（无 type）会被拒绝（实测 `Invalid schema for
-  // function 'hashline_edit': ... got 'type: null'`）。互斥与必填改由
-  // `normalizeEditRequest` 在 execute 内校验：两种输入都提供或都缺失时，
-  // 在 sandbox、审批与文件 I/O 前抛 HASHLINE_INVALID_ARGUMENT。
+  // 模型路由要求函数参数根节点为 type: object，因此两种顶层输入风格仍由
+  // hybrid 执行路径互斥校验。嵌套 oneOf 是 DSH 模型输入工具支持的形状，
+  // 用于让 edits 的每个数组项在 schema 层就只能选择一个操作分支。
+  const nativeFields = inputMode === 'hybrid'
+    ? {
+        old_string: {
+          type: 'string',
+          description: zhPrompt ? '要替换的字面文本。与 edits 互斥；必须精确匹配。' : 'Literal text to replace. Mutually exclusive with edits; must match exactly.',
+        },
+        new_string: {
+          type: 'string',
+          description: zhPrompt ? '替换后的字面文本。空字符串表示删除匹配；需要 old_string。' : 'Literal replacement text. Use an empty string to delete the match; requires old_string.',
+        },
+        replace_all: {
+          type: 'boolean',
+          description: zhPrompt ? '替换所有匹配。默认 false；为 false 时 old_string 必须恰好出现一次。需要 old_string。' : 'Replace all matches. Defaults to false; when false, old_string must appear exactly once. Requires old_string.',
+        },
+      }
+    : {}
   return {
     type: 'object',
     additionalProperties: false,
-    required: ['file_path'],
+    required: inputMode === 'anchored' ? ['file_path', 'edits'] : ['file_path'],
     properties: {
       file_path: filePathField,
-      old_string: {
-        type: 'string',
-        description: zhPrompt ? '要替换的字面文本。与 edits 互斥；必须精确匹配。' : 'Literal text to replace. Mutually exclusive with edits; must match exactly.',
-      },
-      new_string: {
-        type: 'string',
-        description: zhPrompt ? '替换后的字面文本。空字符串表示删除匹配；需要 old_string。' : 'Literal replacement text. Use an empty string to delete the match; requires old_string.',
-      },
-      replace_all: {
-        type: 'boolean',
-        description: zhPrompt ? '替换所有匹配。默认 false；为 false 时 old_string 必须恰好出现一次。需要 old_string。' : 'Replace all matches. Defaults to false; when false, old_string must appear exactly once. Requires old_string.',
-      },
+      ...nativeFields,
       edits: {
         type: 'array',
-        description: zhPrompt ? '非空原子编辑列表，与 old_string 互斥。每项必须恰好包含一个编辑变体。' : 'Non-empty atomic edit list, mutually exclusive with old_string. Each item must contain exactly one edit variant.',
-        items: editItemSchema(zhPrompt),
+        description: inputMode === 'anchored'
+          ? (zhPrompt
+              ? '必填的非空锚定编辑列表。每个数组项必须是只含 set_line、replace_lines 或 insert_after 之一的独立对象。'
+              : 'Required non-empty anchored edit list. Every array element must be a separate object containing exactly one of set_line, replace_lines, or insert_after.')
+          : (zhPrompt
+              ? '非空原子编辑列表，与 old_string 互斥。每个数组项必须是只含一个编辑变体的独立对象。'
+              : 'Non-empty atomic edit list, mutually exclusive with old_string. Every array element must be a separate object containing exactly one edit variant.'),
+        items: editItemSchema(zhPrompt, readToolName, inputMode),
       },
       ...sandbox.schemaFields,
     },
@@ -942,17 +996,18 @@ function createEditTool(
   sandbox: SandboxController,
   toolName: string,
   readToolName: string,
+  inputMode: EditInputMode = 'hybrid',
 ): ToolDefinition {
   return {
     name: toolName,
-      description: options.zhPrompt
-        ? `编辑现有 UTF-8 文本文件。两种输入方式：(1) 用 old_string/new_string 及可选的 replace_all 做简单唯一字面替换，或 (2) 锚定到 ${readToolName} 最新 LINE:HASH 锚点的原子编辑。` +
-          '所有锚点在任何写入前针对同一稳定快照校验；过期锚点和重叠目标会在不改变文件的情况下失败。' +
-          '支持的锚定变体为 set_line、replace_lines、insert_after 和精确 replace。锚定编辑不能与 replace 混用。'
-        : `Edit an existing UTF-8 text file. Two input styles: (1) a simple unique literal replacement with old_string/new_string and optional replace_all, or (2) atomic edits anchored to fresh LINE:HASH anchors from ${readToolName}. ` +
-          'All anchors are verified against one stable snapshot before any write; stale anchors and overlapping targets fail without changing the file. ' +
-          'Supported anchored variants are set_line, replace_lines, insert_after, and exact replace. Anchored edits cannot be mixed with replace.',
-      parameters: editParameters(sandbox, options.zhPrompt),
+    description: inputMode === 'anchored'
+      ? (options.zhPrompt
+          ? `用 ${readToolName} 最新输出中的 LINE:HASH 锚点编辑现有 UTF-8 文本文件。edits 必须非空，每个数组项只包含 set_line、replace_lines 或 insert_after 中的一个操作。此严格入口不接受 old_string/new_string 或无锚点 replace。所有锚点在写入前针对同一稳定快照统一校验。`
+          : `Edit an existing UTF-8 text file with fresh LINE:HASH anchors from ${readToolName}. edits is required and non-empty; every array element must contain exactly one set_line, replace_lines, or insert_after operation. This strict surface does not accept old_string/new_string or unanchored replace. All anchors are verified against one stable snapshot before writing.`)
+      : (options.zhPrompt
+          ? `编辑现有 UTF-8 文本文件。两种互斥输入：(1) 用 old_string/new_string 及可选 replace_all 做简单唯一字面替换；(2) 用 edits 执行原子编辑，每个数组项只包含 set_line、replace_lines、insert_after 或精确 replace 中的一个操作。锚定操作使用 ${readToolName} 的最新 LINE:HASH；锚定操作不能与 replace 混用。`
+          : `Edit an existing UTF-8 text file with exactly one input style: (1) old_string/new_string and optional replace_all for a simple unique literal replacement; or (2) atomic edits where every array element contains exactly one set_line, replace_lines, insert_after, or exact replace operation. Anchored operations use fresh LINE:HASH anchors from ${readToolName} and cannot be mixed with replace.`),
+    parameters: editParameters(sandbox, options.zhPrompt, readToolName, inputMode),
     output: {
       schema: EDIT_OUTPUT_SCHEMA,
       render: (_args: unknown, value: Record<string, unknown>) => renderEdit(value as unknown as EditResultValue, toolName),
@@ -965,6 +1020,8 @@ function createEditTool(
     },
     async execute(rawArgs: unknown, exec: ToolExec) {
       const args = requireObject(rawArgs, 'arguments')
+      // anchored 模式的模型 schema 不公开 native 字段，但执行器允许旧适配器
+      // 物化的精确空哨兵进入 normalizeEditRequest；任何非空或错误类型都会被拒绝。
       assertOnlyKeys(
         args,
         sandbox.confining
@@ -972,9 +1029,13 @@ function createEditTool(
           : ['file_path', 'old_string', 'new_string', 'replace_all', 'edits'],
         'arguments',
       )
-      const { filePath, rawEdits } = normalizeEditRequest(args)
-      // 编辑结构在 sandbox、审批和文件 I/O 前失败。
-      parseEditEntries(rawEdits)
+      const { filePath, rawEdits } = normalizeEditRequest(args, inputMode)
+      // 编辑结构在 sandbox、审批和文件 I/O 前失败。替换内置 edit 的严格入口
+      // 还会在执行层拒绝旧回放或直接调用传入的无锚点 replace。
+      const parsedEdits = parseEditEntries(rawEdits)
+      if (inputMode === 'anchored' && parsedEdits.some(edit => edit.kind === 'replace')) {
+        invalidArgument(`${toolName} only accepts LINE:HASH-anchored set_line, replace_lines, or insert_after operations`)
+      }
       if (exec.agent === undefined) {
         throw hashlineError('HASHLINE_AGENT_REQUIRED', `${toolName} requires an agent-backed tool execution`)
       }
@@ -1017,11 +1078,11 @@ function createEditTool(
       const filePath = args.file_path
       if (typeof filePath !== 'string') return undefined
       const nativeDiff =
-        typeof args.old_string === 'string' && typeof args.new_string === 'string'
+        inputMode === 'hybrid' && typeof args.old_string === 'string' && typeof args.new_string === 'string'
           ? [{ path: filePath, oldText: args.old_string || null, newText: args.new_string }]
           : undefined
       const replaceDiff =
-        nativeDiff === undefined && Array.isArray(args.edits) && args.edits.length === 1
+        inputMode === 'hybrid' && nativeDiff === undefined && Array.isArray(args.edits) && args.edits.length === 1
           ? singleReplaceDiff(filePath, args.edits[0])
           : undefined
       const diffs = nativeDiff ?? replaceDiff
@@ -1055,26 +1116,17 @@ function createEditTool(
 }
 
 function guidanceText(options: ResolvedConfig): string {
-  const replaced = options.replaceBuiltinEdit
-  const readToolName = replaced ? 'read' : 'hashline_read'
-  const editToolName = replaced ? 'edit' : 'hashline_edit'
   if (options.zhPrompt) {
-    const finalGuidance = replaced
-      ? 'read 和 edit 工具当前是 Hashline 读写器。新建文件用 write。'
-      : '新建文件用 write，简单唯一字面替换用内置 edit。'
     return (
-      `用 ${editToolName} 配合 old_string/new_string 做简单唯一字面替换，或用 ${readToolName} 后再 ${editToolName}（edits）做对同一文件的多次编辑、多处原子编辑，或在字面替换因空白或行尾而脆弱时使用。` +
+      '用 hashline_edit 配合 old_string/new_string 做简单唯一字面替换，或用 hashline_read 后再 hashline_edit（edits）做对同一文件的多次编辑、多处原子编辑，或在字面替换因空白或行尾而脆弱时使用。edits 数组的每一项只放一个操作。' +
       '从最新输出中精确复制 LINE:HASH 锚点。哈希不匹配意味着未写入；使用错误中给出的更新锚点或重新读取。' +
-      finalGuidance
+      '新建文件用 write，简单唯一字面替换用内置 edit。'
     )
   }
-  const finalGuidance = replaced
-    ? 'The read and edit tools are currently the Hashline read/editor. Use write for new files.'
-    : 'Use write for new files and the built-in edit for a simple unique literal replacement.'
   return (
-    `Use ${editToolName} with old_string/new_string for a simple unique literal replacement, or ${readToolName} followed by ${editToolName} with edits for repeated edits to the same file, multi-location atomic edits, or when literal replacement is fragile because of whitespace or line endings. ` +
+    'Use hashline_edit with old_string/new_string for a simple unique literal replacement, or hashline_read followed by hashline_edit with edits for repeated edits to the same file, multi-location atomic edits, or when literal replacement is fragile because of whitespace or line endings. Put exactly one operation in each edits array element. ' +
     'Copy LINE:HASH anchors exactly from the newest output. A hash mismatch means nothing was written; use the updated anchor in the error or read again. ' +
-    finalGuidance
+    'Use write for new files and the built-in edit for a simple unique literal replacement.'
   )
 }
 
@@ -1107,18 +1159,30 @@ function editGuidanceText(options: ResolvedConfig): string {
   const editToolName = replaced ? 'edit' : 'hashline_edit'
   const readToolName = replaced ? 'read' : 'hashline_read'
   if (options.zhPrompt) {
+    if (replaced) {
+      return (
+        `使用 ${editToolName} 工具对现有 UTF-8 文本文件做严格的哈希锚定修改。` +
+        `先用 ${readToolName} 读取，再从最新输出精确复制 LINE:HASH。edits 数组的每一项只放一个 set_line、replace_lines 或 insert_after 操作；多处修改拆成多个数组项。` +
+        '此入口不接受 old_string/new_string 或 replace。哈希不匹配意味着未写入；使用错误中的新锚点或重新读取。新建文件用 write。'
+      )
+    }
     return (
       `使用 ${editToolName} 工具对现有 UTF-8 文本文件做针对性修改。` +
       `用 ${editToolName} 配合 old_string/new_string 做简单唯一字面替换，或用 ${readToolName} 后再 ${editToolName}（edits）做对同一文件的多次编辑、多处原子编辑，或在字面替换因空白或行尾而脆弱时使用。` +
-      '从最新输出中精确复制 LINE:HASH 锚点。哈希不匹配意味着未写入；使用错误中给出的更新锚点或重新读取。' +
-      '新建文件用 write。'
+      'edits 数组的每一项只放一个操作。从最新输出中精确复制 LINE:HASH 锚点。哈希不匹配意味着未写入；使用错误中给出的更新锚点或重新读取。新建文件用 write。'
+    )
+  }
+  if (replaced) {
+    return (
+      `Use the ${editToolName} tool for strictly hash-anchored changes to existing UTF-8 text files. ` +
+      `Call ${readToolName} first and copy fresh LINE:HASH anchors exactly. Put exactly one set_line, replace_lines, or insert_after operation in each edits array element; use separate elements for separate changes. ` +
+      'This surface does not accept old_string/new_string or replace. A hash mismatch means nothing was written; use the updated anchor in the error or read again. Use write for new files.'
     )
   }
   return (
     `Use the ${editToolName} tool for targeted changes to existing UTF-8 text files. ` +
     `Use ${editToolName} with old_string/new_string for a simple unique literal replacement, or ${readToolName} followed by ${editToolName} with edits for repeated edits to the same file, multi-location atomic edits, or when literal replacement is fragile because of whitespace or line endings. ` +
-    'Copy LINE:HASH anchors exactly from the newest output. A hash mismatch means nothing was written; use the updated anchor in the error or read again. ' +
-    'Use write for new files.'
+    'Put exactly one operation in each edits array element. Copy LINE:HASH anchors exactly from the newest output. A hash mismatch means nothing was written; use the updated anchor in the error or read again. Use write for new files.'
   )
 }
 
@@ -1272,7 +1336,7 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
     let disposePromptShadow: (() => void) | undefined
     try {
       disposeRead = scopedTools.register(createReadTool(ctx, current, 'edit', 'read'))
-      disposeEdit = scopedTools.register(createEditTool(ctx, current, sandbox, 'edit', 'read'))
+      disposeEdit = scopedTools.register(createEditTool(ctx, current, sandbox, 'edit', 'read', 'anchored'))
       const disposeRestriction = scopedTools.restrict?.({ deny: ['hashline_read', 'hashline_edit'] })
       // 替换开启时同样替换提示词：在 Agent 自身作用域用同名 tool:read/tool:edit
       // section 阴影内置原文（DSH system-prompt 支持 scope 层同名阴影全局层），
@@ -1310,10 +1374,11 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
   }
 
   function registerGlobalSurface(options: ResolvedConfig): Array<() => void> {
-    const editToolName = options.replaceBuiltinEdit ? 'edit' : 'hashline_edit'
     const added: Array<() => void> = []
     try {
-      added.push(ctx.tools.register(createReadTool(ctx, toEditOptions(options), editToolName)))
+      // 全局读取入口始终配对全局 hashline_edit。只有替换确实安装成功的
+      // Agent scoped read 才在 installReplacement 中配对严格 edit。
+      added.push(ctx.tools.register(createReadTool(ctx, toEditOptions(options), 'hashline_edit')))
       added.push(ctx.tools.register(createEditTool(ctx, toEditOptions(options), sandbox, 'hashline_edit', 'hashline_read')))
       if (options.promptGuidance && !options.replaceBuiltinEdit) {
         added.push(ctx.systemPrompt.section({ name: 'tool:hashline', order: 103, text: guidanceText(options) }))

@@ -487,14 +487,12 @@ npm pack --dry-run --json
 
 ### 已确认的取舍（对照计划）
 
-- **根级 `oneOf`（已被真实环境否决，改用平面 schema）**：DSH 的 JSON Schema 验证器
-  （`packages/core/tools/src/json-schema.ts`）显式支持根级 `oneOf`，本地测试全部通过；但真实运行环境
-  重启后，模型路由在工具列表下发时拒绝无 `type` 的根级 oneOf（实测错误：`Invalid schema for function
-  'hashline_edit': schema must be a JSON Schema of 'type: "object"', got 'type: null'`），并导致插件工具
-  整体不可用（`hashline_read` 也随之消失）。按计划的备选方案切换到**平面可选 object schema**：
-  `type: "object"` + `file_path` 必填 + 其余可选，`edits.items` 也改为平面 object；互斥与必填完全由
-  `normalizeEditRequest` / `parseEditEntries` 在 execute 内运行时校验（sandbox、审批与文件 I/O 之前
-  失败，语义不变）。output schema 不进模型请求，仍可保留 oneOf（`oldText` / `firstChangedLine` 的 null 联合）。
+- **根级 `oneOf`（已被真实环境否决）**：DSH 的 JSON Schema 验证器支持根级 `oneOf`，但真实模型路由
+  在工具列表下发时拒绝无 `type` 的函数参数根节点（`Invalid schema for function 'hashline_edit': schema must
+  be a JSON Schema of 'type: "object"', got 'type: null'`），并导致插件工具整体不可用。因此参数根节点保持
+  `type: "object"` + `file_path` 必填 + 其余按入口选择。早期同时把 `edits.items` 降为平面 object，后来真实会话
+  证明这会诱导模型在一个数组项内填入多个变体并反复失败；现改为 DSH 已支持的嵌套 `items.oneOf` 封闭分支，
+  `parseEditEntries` 仍在 sandbox、审批与文件 I/O 前做防御性复验。output schema 可继续使用 oneOf。
 - **编辑 canonical value**：不保存完整 `before`/`after`，执行成功后立即计算紧凑 hunks，并利用 hunk 的原始旧/新行范围，从实际行正文加实际行尾计算逐行 `oldHashes/newHashes`，写入可选内部字段 `presentation: { diffs }`；`output.presentationMeta` 只投影 `{ diffs }`，`presentResult` 从持久化 `meta` 还原 diff 卡。schema 同步声明这些可选哈希数组。
 - **读取模型文本**：`renderRead` 改为原版读取 envelope（`<path>/<type>/<content>`），内容行保留 `LINE:HASH`；
   `presentationMeta` 投影 `{ number, hash, text }` 行，由客户端映射成原生 `ReadBlock` 的 `LINE|HASH` gutter；`presentResult` 用与原生一致的 envelope 正则提取
@@ -524,3 +522,5 @@ npm pack --dry-run --json
 - 显式替换内置工具必须以 `priority: -100` 阴影 shipped priority `0`。真实 GUI 曾因同 priority/未建立赢家而继续显示 shipped `data-diff`；修正并刷新后，既有 edit 回放命中 `data-hashline-diff`。
 - 真实 edit 将 `const beta = 3` 改为 `const beta = 4` 后，DOM 显示灰色不可选 `-|8359` / `+|6ed1` gutter，正文分别保留红/绿；计算样式确认 gutter `user-select: none`、正文 `auto`，跨 gutter Selection 仅返回正文，复制结果排除哈希 chrome。
 - GUI 验收还确认 client boot revision 更新且无 `Failed to load plugins` / `waiting for service: styles`。由此形成经验：构建和单元测试只是前置证据，最终必须检查当前进程的 bundle revision、目标 keyed toolview DOM、真实工具结果与选择/复制语义。
+- 重启后的最终实机复验已闭环：新 Agent 通过内置 `read` 获取 `1:b6a9` / `3:ae9a`，再只调用一次内置 `edit`，用两个独立 `set_line` 项把三行测试内容改为 `ALPHA` / `beta` / `GAMMA`。当前模型路由接受嵌套 `items.oneOf`，严格 schema 未公开 `old_string` / `new_string` / `replace`，一次调用成功且无重试、审批或文本替换回退；临时文件已清理。
+- 由此收敛出可复用排障顺序：先读完整会话结果确认失败参数形状，再检查实际 active profile、工具列表和 schema，最后用新 Agent 做最小真实读写。不能把文件版本 CAS 当作行哈希验证，也不能把构建、单测或 HTTP bundle 可达当作运行态已换新。

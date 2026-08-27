@@ -417,7 +417,7 @@ export function parseEditEntries(rawEdits: RawEdit[]): ParsedEdit[] {
     if (keys.length !== 1 || !EDIT_KINDS.includes(keys[0] as EditKind)) {
       fail(
         'HASHLINE_INVALID_ARGUMENT',
-        `edits[${order}] must contain exactly one variant (${EDIT_KINDS.join(' | ')})`,
+        `edits[${order}] must contain exactly one variant (${EDIT_KINDS.join(' | ')}); put each operation in its own edits array element`,
       )
     }
 
