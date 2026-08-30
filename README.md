@@ -41,7 +41,7 @@ CRLF/LF 或空白漂移时的机械可靠性问题。
 
 ## 环境要求
 
-- DeepSeek Harness `0.1.0-rc.7` 或兼容版本，默认 profile 为 `web`
+- DeepSeek Harness ≥ 0.1.2-alpha.1，默认 profile 为 `web`
 - Node.js `^22.19.0 || >=24.0.0`
 - 网页配置卡片还要求 DSH 包含 `settings.register(..., { exposeToClients: true })` 支持
 
@@ -90,10 +90,11 @@ dsh plugin --profile web remove deepseek-harness-hashline
 
 | 数据 | 存储位置 |
 | --- | --- |
-| 全局开关、内置读写替换开关、哈希参数 | DSH `settings` 命名空间 `hashline`（在“设置 → 插件 → 插件配置”中编辑） |
+| 启用、替换内置读写、工具选择提示、提示词语言及四个哈希/读取参数 | DSH `settings` 命名空间 `hashline`（在“设置 → 插件 → 插件配置”中编辑） |
 
 插件不注册模型工具以外的额外能力、不上传数据、不维护独立数据文件。客户端只向现有
 `settings.plugin.item` Slot 贡献配置卡片，通过 DSH `settingsScope` 读写同一 Host 命名空间。
+设置卡的准确顺序、默认值和范围只在[使用指南的“配置”章节](docs/usage.md#配置)维护。
 
 ## 常见问题
 

@@ -36,7 +36,7 @@ The explicit `hashline_edit` tool accepts two mutually exclusive input styles: c
 
 ## Requirements
 
-- DeepSeek Harness `0.1.0-rc.7` or a compatible version, using the `web` profile
+- DeepSeek Harness ≥ 0.1.2-alpha.1, using the `web` profile
 - Node.js `^22.19.0 || >=24.0.0`
 - The web settings card also requires DSH support for `settings.register(..., { exposeToClients: true })`
 
@@ -84,9 +84,10 @@ Uninstallation removes the persistent bundle and running entries. It does not de
 
 | Data | Storage |
 | --- | --- |
-| Global enable switch, built-in read/edit replacement switch, and hash parameters | The DSH `hashline` settings namespace, edited under Settings > Plugins > Plugin configuration |
+| Enablement, built-in read/edit replacement, tool-selection guidance, prompt language, and four hash/read parameters | The DSH `hashline` settings namespace, edited under Settings > Plugins > Plugin configuration |
 
 The plugin does not register capabilities beyond its model tools, upload data, or maintain independent data files. The client only contributes a configuration card to the existing `settings.plugin.item` slot and uses DSH `settingsScope` to read and write the same Host namespace.
+The exact card order, defaults, and ranges are maintained only in the [Usage guide configuration section](docs/usage.md#配置).
 
 ## FAQ
 

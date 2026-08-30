@@ -13,9 +13,9 @@
 - 原版工具的核心语义是“按文本做一次精确替换”。
 - Hashline 的核心语义是“确认最近读取的具体行仍未改变，再按锚点编辑”。
 - 原版工具把人类可读的 diff/read card 作为会话展示的一部分。
-- 当前 Hashline 只把安全诊断和锚点文本作为普通工具输出，尚未接入 DSH 的专用展示契约。
+- 当时的 Hashline 只把安全诊断和锚点文本作为普通工具输出，尚未接入 DSH 的专用展示契约。
 
-因此当前最合理的方向是保留 Hashline 的模型安全语义，同时把模型结果和会话 UI 分成两层处理。
+因此当时确定的方向是保留 Hashline 的模型安全语义，同时把模型结果和会话 UI 分成两层处理。
 
 ## 对比一：机械行为
 
@@ -98,9 +98,9 @@ Hashline `hashline_edit`：
 - `packages/fs/tool-fs/src/edit.ts` 使用 `presentationMeta` 和 `presentResult` 生成 `card: 'diff'`。
 - `packages/client/ui-tool/src/client/tool/components/ToolRow.tsx` 将读取卡和 diff 卡交给 `ReadBlock` / `DiffBlock`。
 
-### 当前 Hashline 的呈现
+### 实施前 Hashline 的呈现
 
-当前 Hashline 的 Host 定义只有普通文本渲染：
+实施前 Hashline 的 Host 定义只有普通文本渲染：
 
 - `src/index.ts` 的 `renderRead` 返回 `type: 'text'`。
 - `src/index.ts` 的 `renderEdit` 返回 `type: 'text'`。
@@ -253,9 +253,9 @@ Hashline 的 stale-anchor 错误虽然比原版普通替换失败更长，但它
 
 本草案记录的是当前会话的观察和实测，不代表已经决定要立刻修改实现。
 
-## 后续改进计划（待确认）
+## 历史改进计划（已实施）
 
-> 本节是下一阶段的工作计划，不代表代码已经修改。计划确认后，先保留本文件作为实施记录，再把稳定事实迁移到正式文档。
+> 本节原为下一阶段工作计划，现作为实施前设计记录保留；它不代表当前行为。稳定事实已迁移到正式文档。
 
 ### 一、目标与验收边界
 
