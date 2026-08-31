@@ -196,35 +196,10 @@ test('删除 set_line 目标不会留下幽灵空行', () => {
   assert.equal(result, 'a\nc')
 })
 
-test('replace 逃生舱要求唯一匹配并保留 BOM', () => {
-  const content = '\uFEFFalpha beta'
-  const result = planEdits(content, [
+test('replace 变体已在 0.2.0 移除并被拒绝', () => {
+  expectCode(() => planEdits('alpha beta', [
     { replace: { old_text: 'beta', new_text: 'gamma' } },
-  ])
-  assert.equal(result.after, '\uFEFFalpha gamma')
-  assert.equal(result.replacements, 1)
-})
-
-test('replace all 按实际匹配数报告', () => {
-  const result = planEdits('x x x', [
-    { replace: { old_text: 'x', new_text: 'y', all: true } },
-  ])
-  assert.equal(result.after, 'y y y')
-  assert.equal(result.replacements, 3)
-})
-
-test('replace 默认拒绝多个匹配', () => {
-  expectCode(() => planEdits('x x', [
-    { replace: { old_text: 'x', new_text: 'y' } },
-  ]), 'HASHLINE_TEXT_NOT_UNIQUE')
-})
-
-test('锚定编辑与 replace 不可混用', () => {
-  const content = 'a\n'
-  expectCode(() => planEdits(content, [
-    { set_line: { anchor: anchor(content, 1), new_text: 'A' } },
-    { replace: { old_text: 'A', new_text: 'B' } },
-  ]), 'HASHLINE_MIXED_EDIT_MODES')
+  ]), 'HASHLINE_INVALID_ARGUMENT')
 })
 
 test('insert_after 拒绝空文本', () => {
@@ -294,43 +269,4 @@ test('无效锚点报错回显附近真实锚点', () => {
     assert.match(error.message, /2:[0-9a-f]{4}\|beta/)
     return true
   })
-})
-
-
-test('replace 保留 mixed EOL 文件中未触及区域的原始行尾', () => {
-  const lfMajor = 'a\nb\r\nc\n'
-  const lfResult = planEdits(lfMajor, [
-    { replace: { old_text: 'b', new_text: 'B' } },
-  ])
-  assert.equal(lfResult.after, 'a\nB\r\nc\n')
-
-  const crlfMajor = 'a\r\nb\r\nc\n'
-  const crlfResult = planEdits(crlfMajor, [
-    { replace: { old_text: 'b', new_text: 'B' } },
-  ])
-  assert.equal(crlfResult.after, 'a\r\nB\r\nc\n')
-})
-
-
-test('replace 新增换行时沿用命中位置附近的原始行尾', () => {
-  const content = 'head\r\nvalue\r\ntail\n'
-  const result = planEdits(content, [
-    { replace: { old_text: 'value', new_text: 'first\nsecond' } },
-  ])
-  assert.equal(result.after, 'head\r\nfirst\r\nsecond\r\ntail\n')
-})
-test('跨行 replace 仅沿用被替换区间的行尾风格', () => {
-  const content = 'head\nold1\r\nold2\r\ntail\n'
-  const result = planEdits(content, [
-    { replace: { old_text: 'old1\nold2\n', new_text: 'new1\nnew2\n' } },
-  ])
-  assert.equal(result.after, 'head\nnew1\r\nnew2\r\ntail\n')
-})
-test('replace 对 CRLF 文件自动做 LF 归一匹配', () => {
-  const content = 'alpha\r\nbeta\r\n'
-  const result = planEdits(content, [
-    { replace: { old_text: 'beta\n', new_text: 'gamma\n' } },
-  ])
-  assert.equal(result.after, 'alpha\r\ngamma\r\n')
-  assert.equal(result.replacements, 1)
 })

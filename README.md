@@ -10,7 +10,7 @@
 
 <p align="center">
   <img alt="状态 测试中" src="https://img.shields.io/badge/状态-测试中-ff6b6b">
-  <img alt="版本 0.1.0" src="https://img.shields.io/badge/版本-0.1.0-5965d8">
+  <img alt="版本 0.2.0" src="https://img.shields.io/badge/版本-0.2.0-5965d8">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-3b7a57">
 </p>
 
@@ -18,19 +18,18 @@
 `LINE:HASH` 联合锚点把编辑绑定到模型最近读取过的具体行内容，解决同一文件多轮修改、多处原子修改、
 CRLF/LF 或空白漂移时的机械可靠性问题。
 
-显式工具 `hashline_edit` 同时接受两种输入：简单的唯一文本替换可使用兼容参数
-（`old_string` / `new_string` / `replace_all`），需要锚定编辑时使用 `edits` 列表。默认模式补充
-内置 `read` / `edit`：新文件仍用 `write`。开启“替换内置读写”后，允许编辑的智能体改用严格锚定的
-`read` / `edit`：`edit` 必须使用最新读取结果中的 `LINE:HASH`，不再暴露文本替换参数或无锚点 `replace`。
+`hashline_edit` 是锚定-only 入口：`edits` 必填，只接受 `set_line`、`replace_lines`、
+`insert_after` 三种操作；简单唯一文本替换请使用内置 `edit`（`old_string` / `new_string`），
+新文件用 `write`。传入 `old_string` / `new_string` / `edits[].replace` 会在任何文件操作前被
+拒绝并明确指引改用内置 `edit`。开启“替换内置读写”后，允许编辑的智能体改用同名严格锚定的
+`read` / `edit`，行为与全局工具完全一致。
 
 ## 功能
 
 | 能力 | 说明 |
 | --- | --- |
 | `LINE:HASH` 读取 | `LINE\|HASH  内容` 格式，默认 4 位十六进制 SHA-256 前缀；模型结果同时报告 EOL/BOM |
-| 兼容文本替换 | 显式 `hashline_edit` 可用 `old_string` / `new_string` / `replace_all` 做简单唯一文本替换，并进入安全写入链路 |
-| 三种锚定编辑 | `set_line`、`replace_lines`、`insert_after`；`edits` 的每个数组项只能包含一个操作 |
-| 精确替换逃生舱 | 显式 `hashline_edit` 的 `edits[].replace` 执行严格精确匹配（CRLF↔LF 自动归一），默认要求唯一匹配 |
+| 三种锚定编辑 | `set_line`、`replace_lines`、`insert_after`；`edits` 必填且每个数组项只能包含一个操作 |
 | 原子批量编辑 | 一次调用全部锚点先校验、重叠先拒绝，再原子写入 |
 | 版本 CAS 保护 | 使用 DSH 文件版本防止校验后到写入前的并发覆盖 |
 | 文本保真 | 保留 UTF-8 BOM、LF/CRLF、mixed EOL 未触及区域和文件末尾换行状态 |
@@ -100,15 +99,15 @@ dsh plugin --profile web remove deepseek-harness-hashline
 
 **它和内置 `read` / `edit` 有什么区别？** 内置工具按文本操作；Hashline 把锚定编辑绑定到
 “最近读取过的具体行内容”的哈希锚点，能检测过期读取，并把多处修改作为一次原子请求处理。
-显式 `hashline_edit` 为兼容简单场景仍接受 `old_string` / `new_string`，并走稳定读取和版本 CAS；替换内置工具后的
-`edit` 则是严格锚定入口，不接受这些无哈希参数。此外，Hashline 读取接入 DSH 原生读取卡，编辑结果使用原生风格 diff 卡。
+`hashline_edit` 只接受锚定 `edits`——简单唯一文本替换是内置 `edit` 的职责，两者互补而不重叠。
+此外，Hashline 读取接入 DSH 原生读取卡，编辑结果使用原生风格 diff 卡。
 
 **哈希会碰撞吗？** 短哈希有理论碰撞概率：默认 4 hex 相当于 16 位校验，与行号和文件级版本 CAS 联合使用；
 高风险部署可在配置中提高 `hashLength`。
 
 **“替换内置读写”怎么用？** 开启后，允许编辑的智能体看到的是严格锚定的 `read` / `edit`，
 `hashline_read` / `hashline_edit` 被隐藏。每次修改先用 `read` 获取最新锚点；`edit.edits` 的每个数组项只能包含
-一个 `set_line`、`replace_lines` 或 `insert_after`，不接受 `old_string` / `new_string` 或 `replace`。关闭开关恢复原工具。
+一个 `set_line`、`replace_lines` 或 `insert_after`，不接受 `old_string` / `new_string` 字面替换。关闭开关恢复原工具。
 替换只在智能体原本能看到四个相关工具时安装，避免绕过配置限制；系统提示也在该智能体作用域内同步替换，关闭后恢复。
 
 ## 开发文档

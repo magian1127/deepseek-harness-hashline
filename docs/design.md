@@ -12,21 +12,22 @@ stale read，并把多处修改作为一个原子请求处理。它不判断代�
 ## 工具边界
 
 - 始终注册全局 `hashline_read` / `hashline_edit`，默认不覆盖内置工具；
-- 显式 `hashline_edit` 是兼容入口，接受两种互斥输入：文本替换（`old_string` / `new_string` / `replace_all`，转换为内部
-  `replace` 计划）与 Hashline 风格（`edits` 数组）；两种输入走同一条稳定读取、版本 CAS 与写前验证路径。
-  参数根 schema 保持 `type: "object"`（真实模型路由会拒绝无 `type` 的根级 oneOf）；顶层互斥由
-  `normalizeEditRequest` 在 execute 内校验。`edits.items` 使用嵌套 `oneOf`，每个分支是只含一个操作键的封闭对象，
-  让模型面对的 schema 明确表达“一项一个操作”；原始 `ctx.tools.register` 路径不会自动校验输入值，真正的执行时强制仍由
+- `hashline_edit` 是锚定-only 入口（0.2.0 起）：`edits` 必填且非空，只含 `set_line` / `replace_lines` /
+  `insert_after`。简单唯一字面替换是内置 `edit` 的职责；`old_string` / `new_string` / `replace_all`
+  与 `edits[].replace` 在 execute 内（sandbox、审批与文件 I/O 之前）被拒绝并指引内置 `edit`，仅容忍
+  适配器物化的精确空哨兵。参数根 schema 保持 `type: "object"`（真实模型路由会拒绝无 `type` 的根级
+  oneOf）。`edits.items` 使用嵌套 `oneOf`，每个分支是只含一个操作键的封闭对象，让模型面对的 schema
+  明确表达“一项一个操作”；原始 `ctx.tools.register` 路径不会自动校验输入值，真正的执行时强制仍由
   `parseEditEntries` 完成，并防御旧回放和直接调用；
 - `replaceBuiltinEdit` 显式开启时，只在具体智能体的自身作用域注册严格哈希锚定的 `read` 与 `edit`，可逆遮蔽其继承的原工具。
-  该 `edit` 的 schema 要求非空 `edits`，只含 `set_line` / `replace_lines` / `insert_after`；不公开且在执行层拒绝
-  `old_string` / `new_string` / `replace_all` 和无锚点 `replace`，确保替换模式不能绕开行哈希；
+  该 `edit` 与全局 `hashline_edit` 是同一锚定-only 契约：`edits` 必填且非空，只含
+  `set_line` / `replace_lines` / `insert_after`；执行层同样拒绝 `old_string` / `new_string` /
+  `replace_all` 和无锚点 `replace`，确保替换模式不能绕开行哈希；
 - 全局 `hashline_read` 的说明始终配对全局 `hashline_edit`；只有替换整组安装成功的 Agent scoped `read` 才配对严格 `edit`。
   因可见性限制而跳过替换时，不得让全局读取说明把模型导向内置文本 `edit`；
 - 替换前确认该智能体的 `read`、`edit`、`hashline_read`、`hashline_edit` 均可见，避免绕过配置限制；同层重名时保留已有定义并回滚整组替换；
 - 不修改或卸载 `tool-fs`；
 - V1 不做 symbol、AST、fuzzy matching、grep 锚点或上下文卫生跟踪；
-- `replace` 是严格精确匹配，不做近似匹配；仅对 CRLF↔LF 做可逆归一（见「精确替换」），不做空白折叠。
 - 新建文件和全量重写不属于本插件。
 
 ## 锚点
@@ -62,14 +63,13 @@ BOM 作为文件元数据单独保存，不进入首行哈希。这样首行显�
 - 两个替换/删除范围相交时拒绝；
 - `insert_after` 的边界行落入任何替换范围时拒绝；
 - 同一锚点允许多个 `insert_after`，并保持请求数组顺序；
-- 编辑从高行号向低行号应用，避免低位修改改变高位索引；
-- 锚定编辑和精确 `replace` 不能混用，避免两套定位语义相互依赖。
+- 编辑从高行号向低行号应用，避免低位修改改变高位索引。
 
-## 精确替换
+## 精确替换（已移除）
 
-`replace` 变体对 `old_text` 做严格精确匹配。匹配阶段把 CRLF/LF 映射到统一 LF 视图，但同时保留归一化位置到原文边界的映射；
-写回仅替换命中区间，并沿用该区间的行尾风格，因此 mixed EOL 文件中未触及的 LF/CRLF 字节保持不变。
-它不做行尾空白裁剪、连续空白折叠或任何模糊匹配，因为那些操作会使匹配坐标不可逆，
+`replace` 变体（含旧 hybrid 入口 `old_string` / `new_string` / `replace_all`）已在 0.2.0 移除：
+它与内置 `edit` 职责重叠、稀释锚定定位，且维护双输入路径的互斥校验与空哨兵防御成本高。
+锚定编辑本身不做行尾空白裁剪、连续空白折叠或任何模糊匹配——那些操作会使定位不可逆，
 破坏「写对位置」的安全前提。
 
 ## DSH 集成
@@ -96,8 +96,8 @@ system-prompt 的 scope 层同名阴影规则替换内置原文。严格 `tool:e
 全局 `tool:hashline` 仍用合并的 `guidanceText`（它是独立补充说明，不阴影任何 section）。
 
 `zhPrompt` 开启时，三个提示词函数（`guidanceText` / `readGuidanceText` / `editGuidanceText`）与工具/参数的
-`description` 全部改为中文（工具 description、`file_path`/`offset`/`limit`/`old_string`/`new_string`/`replace_all`/`edits`
-及四种编辑变体的参数 description），工具名（`read`/`edit`/`hashline_read`/`hashline_edit`）保持英文。编辑变体的
+`description` 全部改为中文（工具 description、`file_path`/`edits` 及三种锚定编辑变体的参数 description），
+工具名（`read`/`edit`/`hashline_read`/`hashline_edit`）保持英文。编辑变体的
 items schema 因此由模块级常量改为 `editItemSchema(zhPrompt)` 工厂，`editParameters` 相应接收 `zhPrompt`。
 
 读文件时执行 `stat → readText → stat`，仅在版本前后一致时接受快照；若第一次不稳定会重试
@@ -143,6 +143,7 @@ React、ToolResult 或 DSH 运行时实例。
   `presentResult` 再对空/畸形数据返回 `undefined`，避免成功调用被 ToolRuntime 改写为输出错误。
 - `hashline_read` 的 keyed toolview 复刻最小折叠行 chrome，并直接嵌入公开导出的原生 `ReadBlock`；不复制
   `ReadBlock` 的私有实现或 CSS。`hashline_edit` / 显式替换后的 `edit` 复用同一折叠行 chrome，并以 React inline style 组合原生 diff 的表面、红绿语义、折叠、统计和复制行为；由于公开 `DiffBlock` 没有逐行 gutter API，编辑行由插件显式拆成不可选且 `aria-hidden` 的 `-|HASH` / `+|HASH` gutter 与可选正文。复制器只序列化路径、原生 `- `/`+ ` 和正文，不把哈希 chrome 写入剪贴板。
+- 宿主 `ReadBlock` 契约（DSH 0.1.1-rc 起）：`labels`（`window/copy/copied/collapseAria/expandAria/collapse/expand`）是必需 prop，缺失会在展开渲染时读 `labels.copy` 抛 `TypeError`，读取卡表现为"无法展开"（2026-08-31 升级 0.1.2-alpha.1 后实测）；定位只接受 `className`，不接受 `style`。toolview 注册项声明 `locale: 'settings.hashline'` 后框架注入 `t` 座位（随界面语言切换重渲染），`labels` 由该 `t` 构造：`copy/copied/collapse` 直接用 DSH 共享 common vocabulary，`read.window` / `read.collapseAria` / `read.expandAria` / `read.expandRest` 词条注册在本插件字典。`DisclosureRow` 同样不接受 `style` prop；工具行的宽度布局（`toolRow`）由插件自己的外层 `data-variant` 元素承担，ReadBlock 的外边距由包裹 `div` 承担。
 - 折叠行与编辑 diff 的局部样式不把动态 Cordis 环境的 `styles` Builtin 误声明为客户端 Service 硬依赖；否则 loader 会永久等待不存在的 `styles` Service 并阻断 Web boot。
 - 注册 `read` / `edit` 键会阴影 shipped toolview，但仅在 `enabled && replaceBuiltinEdit` 时动态注册；DSH keyed Slot 的最低 live priority 胜出，因此 Hashline 使用 `priority: -100` 覆盖 shipped 的默认 `0`，而不是在同一 priority 制造注册冲突。默认只拥有 `hashline_read` / `hashline_edit`，两种命名各自复用同一 Hashline 行组件；注销阴影贡献后 shipped toolview 自动恢复。
 - 失败结果的呈现对齐原生 `FileMutationRow`：`read` / `edit` toolview 在 `isError` 时把结果 content 里的 `Error: ...` 文本拉平（`hashlineResultText`，与原生 `toolRowModel.resultText` 同义），折叠摘要显示首行、展开显示完整错误文本，并保持可展开（修复前错误结果因无 diff 而被判为不可展开，会话列表中看不到错误、点缩放无效果）。

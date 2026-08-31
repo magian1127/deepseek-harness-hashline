@@ -10,22 +10,20 @@
 
 <p align="center">
   <img alt="Status Experimental" src="https://img.shields.io/badge/Status-Experimental-ff6b6b">
-  <img alt="Version 0.1.0" src="https://img.shields.io/badge/Version-0.1.0-5965d8">
+  <img alt="Version 0.2.0" src="https://img.shields.io/badge/Version-0.2.0-5965d8">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-3b7a57">
 </p>
 
 **DeepSeek Harness hash-anchored file editing plugin**: provides `hashline_read` and `hashline_edit`, binding edits to the exact lines most recently read by the model through `LINE:HASH` anchors. This helps detect stale reads, supports multiple edits in one request, and makes file changes mechanically reliable.
 
-The explicit `hashline_edit` tool accepts two mutually exclusive input styles: compatibility parameters (`old_string` / `new_string` / `replace_all`) for a simple unique literal replacement, or the `edits` list for anchored edits. In the default mode, the plugin supplements the built-in `read` and `edit` tools. New files should still use `write`. When **Replace built-in read/edit** is enabled, allowed agents instead receive strict `read` / `edit` surfaces: `edit` requires fresh `LINE:HASH` anchors and does not expose literal-replacement parameters or unanchored `replace`.
+`hashline_edit` is an anchored-only surface: `edits` is required and accepts only `set_line`, `replace_lines`, and `insert_after` operations. Use the built-in `edit` (`old_string` / `new_string`) for a simple unique literal replacement and `write` for new files. Passing `old_string` / `new_string` / `edits[].replace` is rejected before any file access with guidance toward the built-in `edit`. When **Replace built-in read/edit** is enabled, allowed agents instead receive strict `read` / `edit` surfaces with exactly the same anchored-only contract.
 
 ## Features
 
 | Capability | Description |
 | --- | --- |
 | `LINE:HASH` reads | Returns `LINE\|HASH  text` records with model-visible EOL/BOM metadata. The default hash covers the complete line and its real line ending. |
-| Compatible literal replacement | Explicit `hashline_edit` supports `old_string` / `new_string` / `replace_all` for a simple unique replacement through the safe write pipeline. |
-| Three anchored edits | `set_line`, `replace_lines`, and `insert_after`; every `edits` array element contains exactly one operation. |
-| Exact replacement escape hatch | `replace` inside explicit `hashline_edit` performs strict literal matching and requires a unique match by default. |
+| Three anchored edits | `set_line`, `replace_lines`, and `insert_after`; `edits` is required and every array element contains exactly one operation. |
 | Atomic batch edits | Validates all anchors first, rejects overlaps, and then writes atomically. |
 | Version CAS protection | Uses the DSH file version to prevent concurrent changes between validation and writing. |
 | Text fidelity | Preserves the UTF-8 BOM, untouched regions of mixed-EOL files, LF/CRLF style, and the final-newline state. |
@@ -91,11 +89,11 @@ The exact card order, defaults, and ranges are maintained only in the [Usage gui
 
 ## FAQ
 
-**How is this different from the built-in `read` and `edit`?** Hashline binds an anchored edit to the exact content most recently read, detects stale reads, and handles multiple edits as one atomic request. Explicit `hashline_edit` keeps `old_string` / `new_string` compatibility for simple cases and routes it through the stable-read and version-CAS pipeline. The `edit` surface installed by built-in replacement is strict and rejects those unanchored parameters. Hashline reads use the DSH native read card, while edits use a native-style diff card with Hashline gutters.
+**How is this different from the built-in `read` and `edit`?** Hashline binds an anchored edit to the exact content most recently read, detects stale reads, and handles multiple edits as one atomic request. `hashline_edit` accepts anchored `edits` only — a simple unique literal replacement is the built-in `edit`'s job, so the two tools complement each other instead of overlapping. Hashline reads use the DSH native read card, while edits use a native-style diff card with Hashline gutters.
 
 **Can a short hash collide?** A short hash has a theoretical collision probability. The default 4 hexadecimal characters provide a 16-bit check and are combined with the line number and file-level version CAS. Increase `hashLength` for higher-risk deployments.
 
-**How does Replace built-in read/edit work?** When enabled, an allowed agent sees strict `read` and `edit` surfaces while `hashline_read` and `hashline_edit` are hidden. Call `read` before each change and use its fresh anchors. Every `edit.edits` array element must contain exactly one `set_line`, `replace_lines`, or `insert_after`; `old_string` / `new_string` and `replace` are rejected. Disabling the setting restores the original tools. Replacement is installed only when all four original capabilities are already visible, so it cannot bypass visibility restrictions. The same Agent scope also replaces the built-in prompt guidance and restores it when disabled.
+**How does Replace built-in read/edit work?** When enabled, an allowed agent sees strict `read` and `edit` surfaces while `hashline_read` and `hashline_edit` are hidden. Call `read` before each change and use its fresh anchors. Every `edit.edits` array element must contain exactly one `set_line`, `replace_lines`, or `insert_after`; `old_string` / `new_string` literal replacement is rejected with guidance toward the built-in `edit`. Disabling the setting restores the original tools. Replacement is installed only when all four original capabilities are already visible, so it cannot bypass visibility restrictions. The same Agent scope also replaces the built-in prompt guidance and restores it when disabled.
 
 ## Development documentation
 

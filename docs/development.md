@@ -91,7 +91,7 @@ npm run build
 以下结论以**当前进程的实际能力**为准，不把旧 rev 或 checkout 源码当成运行事实。
 
 - 官方 HMR 在 profile bundle 形态（`file:` 或 `link:`，模块 URL 含 `node_modules`）中可能被默认 ignore 排除；此时必须让本插件以 `hmr.registerConfig`（`ignored: undefined`）精确自监视真实构建产物，不能误判为官方 root 已覆盖。
-- 端到端复验至少覆盖三类历史失败：①过期锚点唯一重定位；②坏锚点回显附近真实锚点；③CRLF 文件用 LF `old_text` 匹配后仍保持原始行尾。测试文件放隔离位置，验收样例若保留在仓库，需明确其用途后再提交。
+- 端到端复验至少覆盖三类历史失败：①过期锚点唯一重定位；②坏锚点回显附近真实锚点；③`old_string` / `edits[].replace` 输入被清晰拒绝（0.2.0 移除后的回归防御）。测试文件放隔离位置，验收样例若保留在仓库，需明确其用途后再提交。
 - 验证提示词注入：系统提示词不持久化进会话日志正文，但会随每个请求写入 `request/header` 的 `system` 字段。完整读取会话导出文件（`.jsonl` 或 `.jsonl.zstd`）后检索 `request/header`，即可看到当次真实组装结果；这是确认“提示词是否重复/缺失”的最直接证据，不要只靠 build/test 通过。
 
 ## 测试与验证
@@ -123,6 +123,9 @@ Hashline 的 Host 验收必须以真实 `hashline_read` / `hashline_edit` 调用
 - 客户端消费方确认：`readCardModel` 消费 `card: 'read'` 的 `lines`/`totalLines`/`lang`/`path`，原生 fallback 的 `diffCardModel` 消费 `card: 'diff'` 的 `diffs[{path,oldText,newText}]`；Hashline keyed edit toolview 另外窄化并消费逐行 `oldHashes/newHashes`；
 - Client 为 `hashline_read` / `hashline_edit` 注册 keyed toolview；显式替换时以 priority `-100` 阴影 shipped priority `0` 的 `read` / `edit`，因为 keyed Slot 只渲染最低 live priority。禁止同 priority 注册（会直接冲突），卸载低优先级贡献后必须立即恢复 shipped toolview；
 - 读取主体直接调用平台外部模块 `@deepseek-ai/dsh-client-ui-primitives` 的 `ReadBlock`，测试桩验证传入的行为参数，不复制高亮或折叠实现。公开 `DiffBlock` 无逐行 gutter API，因此编辑卡仅复刻其表面、折叠、统计与复制语义，正文和哈希 chrome 必须保持两个 DOM span；
+- `ReadBlock` / `DisclosureRow` 的 props 契约以宿主当前源码为准（0.1.2-alpha.1 实测）：`ReadBlock` 的
+  `labels` 必需、定位只接受 `className`；`DisclosureRow` 无 `style` prop。测试桩应断言 `labels` 七个字段
+  齐全、`t` 座位注入时优先采用注入翻译，防止再次出现"折叠行正常、展开即崩"的静默回归。
 - Client 导出的硬依赖只包含当前平台实际提供的 `slots`、`locale`、`connection`、`remote`、`settingsScope`。
   动态插件沙箱里的 `styles.insert()` 是 Builtin 而非静态 client module Service，不得写入 `inject`。测试应断言
   bundle 的 `inject` 精确列表，防止插件以 pending Fiber（`waiting for service: styles`）阻断 Web boot。
@@ -142,8 +145,8 @@ Hashline 的 Host 验收必须以真实 `hashline_read` / `hashline_edit` 调用
 真实环境 schema 约束（实测发现）：模型路由要求工具参数 schema **根节点**必须是 `type: "object"`；
 无 `type` 的根级 `oneOf` 会在工具列表下发时被模型 API 拒绝（`Invalid schema for function ... got
 'type: null'`），并导致插件工具整体不可用。这个限制不能外推到嵌套节点：DSH 输入 schema 支持
-`edits.items: { oneOf: [...] }`，插件用四个（严格替换入口为三个）封闭对象分支表达每项恰好一个操作；
-执行器仍以 `normalizeEditRequest` / `parseEditEntries` 防御旧回放和直接调用。output schema 不进模型请求，可继续使用 oneOf。
+`edits.items: { oneOf: [...] }`，插件用三个封闭对象分支表达每项恰好一个操作（0.2.0 起全局与
+严格替换入口同形）；执行器仍以 `normalizeEditRequest` / `parseEditEntries` 防御旧回放和直接调用。output schema 不进模型请求，可继续使用 oneOf。
 
 ### 严格替换的真实运行态复验
 
@@ -152,7 +155,7 @@ Hashline 的 Host 验收必须以真实 `hashline_read` / `hashline_edit` 调用
 - `read` 输出最新 `LINE:HASH` 锚点；`edit` 的参数根为 `type: "object"`，必填 `file_path` / `edits`，`edits.items.oneOf` 是三个封闭的 `set_line` / `replace_lines` / `insert_after` 分支，且不公开 `old_string` / `new_string` / `replace`。
 - 一次 `edit` 可以携带两个独立的 `set_line` 数组项，并在同一稳定快照上成功写入；本次实机结果为 `ALPHA`、`beta`、`GAMMA`，没有重试，也没有退回文本替换。
 - 这证明当前模型路由可接受嵌套 `items.oneOf`；根级 `oneOf` 仍不可用。静态构建、单测和 HTTP bundle 响应都不能替代真实工具 schema、真实调用和真实文件结果的 Host 验收。
-- 原始失败的关键经验是：同一 `edits[i]` 塞入多个变体会连续失败，模型随后转用 `old_string/new_string` 虽可通过文件版本 CAS，却没有绑定最近读取的 `LINE:HASH`。因此严格替换必须同时收紧 schema、工具说明、scoped prompt 和执行层；显式 `hashline_edit` 才保留兼容文本替换。
+- 原始失败的关键经验是：同一 `edits[i]` 塞入多个变体会连续失败，模型随后转用 `old_string/new_string` 虽可通过文件版本 CAS，却没有绑定最近读取的 `LINE:HASH`。严格替换因此必须同时收紧 schema、工具说明、scoped prompt 和执行层；0.2.0 起全局 `hashline_edit` 与严格替换同形，不再保留兼容文本替换。
 
 测试文件验收后立即删除，避免把临时路径和用户数据带入仓库或发布包。
 

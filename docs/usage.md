@@ -9,9 +9,9 @@
 | 工具 | 作用 |
 | --- | --- |
 | `hashline_read` | 读取 UTF-8 文本文件，返回带 `LINE:HASH` 锚点的行 |
-| `hashline_edit` | 编辑文件：支持兼容文本替换，也支持锚点原子编辑（`set_line` / `replace_lines` / `insert_after` / `replace`） |
+| `hashline_edit` | 锚定-only 编辑：`edits` 必填，只接受 `set_line` / `replace_lines` / `insert_after`；简单字面替换用内置 `edit` |
 
-开启“替换内置读写”后，工具以 `read` / `edit` 名称出现，其中 `edit` 切换为严格锚定参数：只公开必填的 `edits`，且只接受 `set_line`、`replace_lines`、`insert_after`。
+开启“替换内置读写”后，工具以 `read` / `edit` 名称出现，`edit` 与全局 `hashline_edit` 是同一锚定-only 契约。
 
 ## 读取
 
@@ -50,28 +50,15 @@
 
 ## 编辑
 
-显式 `hashline_edit` 接受两种互斥输入，一次调用只能选择一种（参数根 schema 保持 `type: object`；两种都提供或都缺失都会在文件操作前以 `HASHLINE_INVALID_ARGUMENT` 拒绝）：
+`hashline_edit` 是锚定-only 入口（参数根 schema 保持 `type: object`）：`edits` 必填且非空，
+只接受 `set_line`、`replace_lines`、`insert_after` 三种操作。简单唯一文本替换是内置 `edit`
+（`old_string` / `new_string`）的职责——传入 `old_string` / `new_string` / `replace_all` 或
+`edits[].replace` 会在任何文件操作前以 `HASHLINE_INVALID_ARGUMENT` 拒绝，并指引改用内置 `edit`。
 
-- **兼容文本替换**：`old_string` / `new_string`（可选 `replace_all`），适合简单且唯一的文本替换；
-- **Hashline 风格**：`edits` 数组，适合具体行、范围、插入或多点原子修改。
+所有输入都经过相同的稳定读取、版本 CAS 与写前验证。`edits.items` 使用嵌套 `oneOf` 明确每个数组项只能包含一个操作，执行器会再次校验同一规则。
 
-两种输入都会经过相同的稳定读取、版本 CAS 与写前验证。`edits.items` 使用嵌套 `oneOf` 明确每个数组项只能包含一个操作，执行器会再次校验同一规则。
-
-替换内置工具后的 `edit` 是更严格的入口：`edits` 必填且非空，只允许锚定的 `set_line`、`replace_lines`、`insert_after`；schema 不公开 `old_string`、`new_string`、`replace_all` 或 `replace`，旧回放和绕过 schema 的直接调用也会在文件操作前被拒绝。
-
-### 简单文本替换（兼容入口）
-
-```json
-{
-  "file_path": "src/example.js",
-  "old_string": "const value = 123",
-  "new_string": "const value = 456"
-}
-```
-
-- `old_string` 必须非空且与 `new_string` 不同。
-- 默认要求全文唯一匹配；有多个匹配时需传 `replace_all: true`，或改用更长的 `old_string`。
-- 空 `new_string` 表示删除匹配内容。
+替换内置工具后的 `edit` 与全局 `hashline_edit` 是同一契约：`edits` 必填且非空，只允许锚定的
+`set_line`、`replace_lines`、`insert_after`；旧回放和绕过 schema 的直接调用传入字面替换参数时同样在文件操作前被拒绝。
 
 ### 修改单行（set_line）
 
@@ -112,46 +99,25 @@
 }
 ```
 
-### 精确替换逃生舱（replace）
-
-此变体只在显式 `hashline_edit` 的兼容入口中公开；替换内置工具后的严格 `edit` 不接受它。
-
-```json
-{
-  "file_path": "src/example.js",
-  "edits": [
-    {
-      "replace": {
-        "old_text": "oldName",
-        "new_text": "newName",
-        "all": true
-      }
-    }
-  ]
-}
-```
-
 ## 注意事项
 
-- 显式 `hashline_edit` 的兼容文本替换（`old_string` / `new_string`）与 `edits` 数组**不能混用**，也不可同时缺失。
+- `old_string` / `new_string` / `replace_all` 与 `edits[].replace` 已在 0.2.0 移除；传给 `hashline_edit` 会被拒绝并指引使用内置 `edit` 做简单字面替换。适配器为未选变体物化的空哨兵（`''` / `false` / 空对象）仍被容忍忽略。
 - `edits` 的每个数组项必须是独立对象，且只包含一个操作；多个位置的修改要拆成多个数组项，不能把多个变体键塞进同一个项。
-- 锚定编辑（`set_line` / `replace_lines` / `insert_after`）与显式 `hashline_edit` 的 `edits[].replace` **不能在一次调用中混用**。
 - `set_line` / `replace_lines` 的空 `new_text` 表示删除；要写入一个有行尾的空白行，使用 `"\n"`。
 - `insert_after.new_text` 不允许为空。
-- 显式 `hashline_edit` 的兼容文本替换与 `edits[].replace` 都是严格字符串匹配；匹配时自动兼容 CRLF↔LF，写回只替换命中区间并保留 mixed EOL 文件中未触及区域的原始行尾；不做空白折叠或模糊匹配。
-- 开启“替换内置读写”后，`read` 保持 Hashline 读取参数；`edit` 改为严格锚定 schema，不再接受兼容文本替换或 `replace`。
+- 开启“替换内置读写”后，`read` 保持 Hashline 读取参数；`edit` 与全局 `hashline_edit` 是同一锚定-only 契约。
 - 复制锚点必须来自**最新一次**读取输出。哈希不匹配时，若全文件恰有一行与锚点哈希一致则自动重定位到该行，否则表示未写入，应使用报错里给出的新锚点或重新读取。
 
 ## 会话呈现
 
 - `hashline_read` 成功结果复用 DSH 原生 `ReadBlock`（复制、折叠、语言高亮、`showing N of M`）；完整 `LINE|HASH` 是灰色且不可选的 gutter，正文独立可选，模型-facing 文本保留同一锚点。
 - `hashline_edit` 成功结果显示为原生风格 diff 卡，diff 由实际写入前后的真实文本计算：删除行以灰色不可选 gutter `-|旧HASH` 开头，新增行以 `+|新HASH` 开头，正文与 gutter 分离且可单独选择；红/绿语义、折叠、统计与复制语义和原生卡一致，复制内容不含哈希 gutter（展示层把 CRLF 归一到 LF 并忽略 BOM，实际写入保真不变）。
-- 显式 `hashline_edit` 的兼容文本替换与单条 `edits[].replace` 在运行前显示 pending diff；严格 `edit` 只有锚点编辑，没有旧文本，保持通用编辑卡，不伪造 diff。
+- 锚定编辑没有旧文本可展示，运行前保持通用编辑卡，不伪造 diff；成功后的 diff 卡由实际写入前后的真实文本计算。
 - 错误、无变化、过期锚点或畸形回放数据一律回退普通文本结果；无变化 metadata 使用空 `diffs`（合法 JSON），不会把成功调用转成输出错误。
 
 ## 安全模型
 
-一次编辑（无论是显式 `hashline_edit` 的兼容文本替换，还是任一锚点入口）按以下顺序执行：
+一次编辑（全局 `hashline_edit` 或替换内置后的 `edit`）按以下顺序执行：
 
 1. 根据调用会话的 workspace 解析路径和 sandbox policy；
 2. 读取文件，并在前后两次 `stat` 版本一致时接受该快照；

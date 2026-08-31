@@ -15,10 +15,10 @@ export const DEFAULT_MAX_LINE_LENGTH = 500
 export const DEFAULT_READ_LIMIT = 2000
 export const DEFAULT_CONTEXT_LINES = 2
 
-/** 锚定/精确替换编辑的四种变体名称。 */
-export type EditKind = 'set_line' | 'replace_lines' | 'insert_after' | 'replace'
+/** 锚定编辑的三种变体名称；精确文本替换（replace）已在 0.2.0 移除。 */
+export type EditKind = 'set_line' | 'replace_lines' | 'insert_after'
 
-const EDIT_KINDS: readonly EditKind[] = ['set_line', 'replace_lines', 'insert_after', 'replace']
+const EDIT_KINDS: readonly EditKind[] = ['set_line', 'replace_lines', 'insert_after']
 
 /** Hashline 编辑错误码（稳定、可机器路由）。 */
 export type HashlineErrorCode =
@@ -29,9 +29,6 @@ export type HashlineErrorCode =
   | 'HASHLINE_HASH_MISMATCH'
   | 'HASHLINE_INVALID_RANGE'
   | 'HASHLINE_OVERLAPPING_EDIT'
-  | 'HASHLINE_TEXT_NOT_FOUND'
-  | 'HASHLINE_TEXT_NOT_UNIQUE'
-  | 'HASHLINE_MIXED_EDIT_MODES'
 
 /** 附加到 HashlineError 上的结构化诊断信息（`details`）。 */
 export type HashlineErrorDetails = Record<string, unknown>
@@ -72,11 +69,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function requireString(value: unknown, label: string): string {
   if (typeof value !== 'string') fail('HASHLINE_INVALID_ARGUMENT', `${label} must be a string`)
-  return value
-}
-
-function requireBoolean(value: unknown, label: string): boolean {
-  if (typeof value !== 'boolean') fail('HASHLINE_INVALID_ARGUMENT', `${label} must be a boolean`)
   return value
 }
 
@@ -382,19 +374,12 @@ export interface InsertAfterEdit {
   newText: string
 }
 
-/** replace（精确文本替换）编辑变体。 */
-export interface ReplaceEdit {
-  kind: 'replace'
-  order: number
-  oldText: string
-  newText: string
-  all: boolean
-}
+/** replace（精确文本替换）已在 0.2.0 移除：字面替换属于内置 edit 的职责。 */
 
 /** 解析阶段得到的编辑变体（不含解析后的行号）。 */
-export type ParsedEdit = SetLineEdit | ReplaceLinesEdit | InsertAfterEdit | ReplaceEdit
+export type ParsedEdit = SetLineEdit | ReplaceLinesEdit | InsertAfterEdit
 
-/** 锚定编辑（不含 replace 逃生舱）：参与锚点解析与行号补全。 */
+/** 锚定编辑：参与锚点解析与行号补全。 */
 export type AnchorEdit = SetLineEdit | ReplaceLinesEdit | InsertAfterEdit
 
 /** 编辑请求的输入形式：恰好一个变体键。 */
@@ -402,7 +387,6 @@ export type RawEdit =
   | { set_line: { anchor: unknown; new_text: unknown } }
   | { replace_lines: { start_anchor: unknown; end_anchor: unknown; new_text: unknown } }
   | { insert_after: { anchor: unknown; new_text: unknown } }
-  | { replace: { old_text: unknown; new_text: unknown; all?: unknown } }
 
 export function parseEditEntries(rawEdits: RawEdit[]): ParsedEdit[] {
   if (!Array.isArray(rawEdits) || rawEdits.length === 0) {
@@ -463,22 +447,8 @@ export function parseEditEntries(rawEdits: RawEdit[]): ParsedEdit[] {
       } satisfies InsertAfterEdit
     }
 
-    assertOnlyKeys(value, ['old_text', 'new_text', 'all'], `edits[${order}].replace`)
-    const oldText = requireString(value.old_text, `edits[${order}].replace.old_text`)
-    const newText = requireString(value.new_text, `edits[${order}].replace.new_text`)
-    if (oldText.length === 0) {
-      fail('HASHLINE_INVALID_ARGUMENT', `edits[${order}].replace.old_text must not be empty`)
-    }
-    if (oldText === newText) {
-      fail('HASHLINE_INVALID_ARGUMENT', `edits[${order}].replace old_text and new_text must differ`)
-    }
-    return {
-      kind,
-      order,
-      oldText,
-      newText,
-      all: value.all === undefined ? false : requireBoolean(value.all, `edits[${order}].replace.all`),
-    } satisfies ReplaceEdit
+    // EDIT_KINDS 检查已把 kind 限定为上述三种；replace 变体已在 0.2.0 移除。
+    return fail('HASHLINE_INVALID_ARGUMENT', `edits[${order}].replace is not accepted; use the built-in edit for literal replacement`)
   })
 }
 
@@ -617,126 +587,11 @@ function resolveAnchoredEdits(lines: TextLine[], edits: AnchorEdit[], options: A
   return resolved
 }
 
-/** 精确替换应用的统计结果。 */
-interface ReplaceResult {
-  body: string
-  replacements: number
-}
-
-/** 归一化：把 CRLF 与孤立 CR 统一为 LF，用于 replace 的受控匹配。 */
-function normalizeEolForMatch(text: string): string {
-  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-}
-
-interface NormalizedMatchView {
-  text: string
-  /** `boundaries[i]` 是归一化文本位置 i 对应的原文 UTF-16 边界。 */
-  boundaries: number[]
-}
-
-/**
- * 构造仅供匹配使用的 LF 视图，同时保留每个归一化边界到原文边界的映射。
- * 这样 old_text 可跨 CRLF/LF 匹配，但写回只拼接匹配区间之外的原文切片，
- * 不会把 mixed EOL 文件中未触及的行尾整体重写。
- */
-function normalizedMatchView(text: string): NormalizedMatchView {
-  let normalized = ''
-  const boundaries = [0]
-  for (let index = 0; index < text.length;) {
-    if (text[index] === '\r' && text[index + 1] === '\n') {
-      normalized += '\n'
-      index += 2
-    } else {
-      normalized += text[index]
-      index += 1
-    }
-    boundaries.push(index)
-  }
-  return { text: normalized, boundaries }
-}
-
-function matchStarts(haystack: string, needle: string): number[] {
-  const starts: number[] = []
-  for (let cursor = 0;;) {
-    const found = haystack.indexOf(needle, cursor)
-    if (found === -1) return starts
-    starts.push(found)
-    cursor = found + needle.length
-  }
-}
-
-function replacementEol(originalSlice: string, body: string, originalStart: number, originalEnd: number): string {
-  if (originalSlice.includes('\r\n')) return '\r\n'
-  if (originalSlice.includes('\n')) return '\n'
-  const adjacent = body.slice(Math.max(0, originalStart - 2), Math.min(body.length, originalEnd + 2))
-  if (adjacent.includes('\r\n')) return '\r\n'
-  if (adjacent.includes('\n')) return '\n'
-  return dominantEol(splitTextFile(body).lines)
-}
-
-function applyOneExactReplace(body: string, edit: ReplaceEdit, toolName: string): ReplaceResult {
-  const view = normalizedMatchView(body)
-  const oldText = normalizeEolForMatch(edit.oldText)
-  const newText = normalizeEolForMatch(edit.newText)
-  const starts = matchStarts(view.text, oldText)
-  const matches = starts.length
-  if (matches === 0) {
-    fail(
-      'HASHLINE_TEXT_NOT_FOUND',
-      `${toolName}: replace text not found: ${JSON.stringify(edit.oldText.slice(0, 120))}`,
-    )
-  }
-  if (!edit.all && matches !== 1) {
-    fail(
-      'HASHLINE_TEXT_NOT_UNIQUE',
-      `${toolName}: replace old_text matches multiple times; set all: true or make old_text more specific`,
-      { matches },
-    )
-  }
-
-  const selected = edit.all ? starts : starts.slice(0, 1)
-  const parts: string[] = []
-  let originalCursor = 0
-  for (const start of selected) {
-    const originalStart = view.boundaries[start]
-    const originalEnd = view.boundaries[start + oldText.length]
-    const originalSlice = body.slice(originalStart, originalEnd)
-    parts.push(body.slice(originalCursor, originalStart))
-    parts.push(newText.replace(/\n/g, replacementEol(originalSlice, body, originalStart, originalEnd)))
-    originalCursor = originalEnd
-  }
-  parts.push(body.slice(originalCursor))
-  return { body: parts.join(''), replacements: selected.length }
-}
-
-function applyExactReplaces(body: string, edits: ReplaceEdit[], toolName: string = 'hashline_edit'): ReplaceResult {
-  let current = body
-  let replacements = 0
-  for (const edit of edits) {
-    const result = applyOneExactReplace(current, edit, toolName)
-    current = result.body
-    replacements += result.replacements
-  }
-  return { body: current, replacements }
-}
-export function firstChangedLine(before: string, after: string): number | null {
-  if (before === after) return null
-  const limit = Math.min(before.length, after.length)
-  let index = 0
-  while (index < limit && before.charCodeAt(index) === after.charCodeAt(index)) index += 1
-  let line = 1
-  for (let cursor = 0; cursor < index; cursor += 1) {
-    if (before.charCodeAt(cursor) === 10) line += 1
-  }
-  return line
-}
-
 /** 一次编辑计划的结果。 */
 export interface EditPlan {
   after: string
   changed: boolean
   editsApplied: number
-  replacements: number
   removedLines: number
   addedLines: number
   firstChangedLine: number | null
@@ -747,31 +602,8 @@ export interface EditOptions extends AnchorOptions {}
 
 export function planEdits(content: string, rawEdits: RawEdit[], options: EditOptions = {}): EditPlan {
   const parsed = parseEditEntries(rawEdits)
-  const anchored = parsed.filter(
-    (edit): edit is AnchorEdit => edit.kind !== 'replace',
-  )
-  const replacements = parsed.filter((edit): edit is ReplaceEdit => edit.kind === 'replace')
-  if (anchored.length > 0 && replacements.length > 0) {
-    fail(
-      'HASHLINE_MIXED_EDIT_MODES',
-      `${options.toolName ?? 'hashline_edit'}: anchor-verified edits and replace cannot be mixed in one call; split them into separate calls`,
-    )
-  }
-
+  const anchored: AnchorEdit[] = parsed
   const file = splitTextFile(content)
-  if (replacements.length > 0) {
-    const result = applyExactReplaces(file.body, replacements, options.toolName)
-    const after = (file.bom ? '\uFEFF' : '') + result.body
-    return {
-      after,
-      changed: after !== content,
-      editsApplied: parsed.length,
-      replacements: result.replacements,
-      removedLines: 0,
-      addedLines: 0,
-      firstChangedLine: firstChangedLine(file.body, result.body),
-    }
-  }
 
   const resolved = resolveAnchoredEdits(file.lines, anchored, options)
   const sorted = [...resolved].sort((left, right) => {
@@ -800,7 +632,6 @@ export function planEdits(content: string, rawEdits: RawEdit[], options: EditOpt
     after,
     changed: after !== content,
     editsApplied: parsed.length,
-    replacements: 0,
     removedLines,
     addedLines,
     firstChangedLine: Number.isFinite(changedLine) ? changedLine : null,

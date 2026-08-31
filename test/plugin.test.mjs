@@ -338,17 +338,19 @@ test('zhPrompt=true 时提示词与工具说明中文化，工具名保持英文
 
   // 工具名仍为英文。
   assert.deepEqual([...harness.tools.keys()], ['hashline_read', 'hashline_edit'])
-  // 工具 description 中文化。
+  // 工具 description 中文化（锚定-only 入口，明确指引字面替换用内置 edit）。
   assert.match(harness.tools.get('hashline_read').description, /用 LINE:HASH 锚点读取 UTF-8 文本文件/)
-  assert.match(harness.tools.get('hashline_edit').description, /编辑现有 UTF-8 文本文件/)
+  assert.match(harness.tools.get('hashline_edit').description, /用 hashline_read 最新输出中的 LINE:HASH 锚点编辑/)
+  assert.match(harness.tools.get('hashline_edit').description, /简单字面替换请用内置 edit/)
   // 参数 description 中文化。
   assert.equal(harness.tools.get('hashline_read').parameters.properties.file_path.description, '要读取的路径，相对于调用会话工作区解析。')
   const editProps = harness.tools.get('hashline_edit').parameters.properties
-  assert.equal(editProps.old_string.description, '要替换的字面文本。与 edits 互斥；必须精确匹配。')
+  assert.equal(editProps.edits.description, '必填的非空锚定编辑列表。每个数组项必须是只含 set_line、replace_lines 或 insert_after 之一的独立对象。')
   const setLineBranch = editProps.edits.items.oneOf.find(branch => branch.required[0] === 'set_line')
   assert.match(setLineBranch.properties.set_line.properties.anchor.description, /从 hashline_read 复制的最新 LINE:HASH 锚点/)
   // 提示词 section 中文化，并明确每个数组项只能放一个操作。
-  assert.match(harness.sections.get('tool:hashline').text, /用 hashline_edit 配合 old_string\/new_string/)
+  assert.match(harness.sections.get('tool:hashline').text, /用 hashline_read 后再 hashline_edit（edits）/)
+  assert.match(harness.sections.get('tool:hashline').text, /简单唯一字面替换用内置 edit/)
   assert.match(harness.sections.get('tool:hashline').text, /edits 数组的每一项只放一个操作/)
 })
 
@@ -357,7 +359,7 @@ test('zhPrompt=false 时提示词与工具说明保持英文', () => {
   apply(harness.ctx, { zhPrompt: false })
   assert.match(harness.tools.get('hashline_read').description, /Read a UTF-8 text file with LINE:HASH anchors/)
   assert.equal(harness.tools.get('hashline_read').parameters.properties.file_path.description, 'Path to read, resolved relative to the calling session workspace.')
-  assert.match(harness.sections.get('tool:hashline').text, /Use hashline_edit with old_string\/new_string/)
+  assert.match(harness.sections.get('tool:hashline').text, /Use hashline_read followed by hashline_edit with edits/)
 })
 
 test('注册显式暴露的 Hashline 持久设置命名空间', () => {
@@ -451,7 +453,7 @@ test('replaceBuiltinEdit 对现有 Agent 可逆遮蔽内置 read/edit', async ()
   assert.ok(!/strictly hash-anchored/.test(harness.agent.__scopedPrompt.get('tool:read').text))
   assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /strictly hash-anchored/)
   assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /exactly one set_line, replace_lines, or insert_after/)
-  assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /does not accept old_string\/new_string or replace/)
+  assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /does not accept old_string\/new_string literal replacement/)
   assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /Use write for new files/)
 
   const read = await readTool.execute({ file_path: 'sample.txt' }, harness.exec)
@@ -855,21 +857,19 @@ test('编辑参数 schema 保持根级 object，并用 items.oneOf 强制一项�
   apply(harness.ctx)
   const parameters = harness.tools.get('hashline_edit').parameters
   // 模型路由要求工具参数根节点为 type: object（根级 oneOf 会被拒绝）；
-    // 嵌套 items.oneOf 让模型生成结构明确表达每项恰好一个操作；执行器仍会复验。
+  // 嵌套 items.oneOf 让模型生成结构明确表达每项恰好一个操作；执行器仍会复验。
+  // 0.2.0 起为锚定-only 入口：edits 必填，无 old_string/new_string/replace_all。
   assert.equal(parameters.type, 'object')
-  assert.deepEqual(parameters.required, ['file_path'])
+  assert.deepEqual(parameters.required, ['file_path', 'edits'])
   assert.equal(parameters.additionalProperties, false)
-  for (const key of ['file_path', 'old_string', 'new_string', 'replace_all', 'edits']) {
-    assert.ok(key in parameters.properties, `missing ${key}`)
-  }
+  assert.deepEqual(Object.keys(parameters.properties).sort(), ['edits', 'file_path'])
   const item = parameters.properties.edits.items
   assert.equal(item.type, undefined)
-  assert.equal(item.oneOf.length, 4)
+  assert.equal(item.oneOf.length, 3)
   assert.deepEqual(item.oneOf.map(branch => branch.required[0]), [
     'set_line',
     'replace_lines',
     'insert_after',
-    'replace',
   ])
   for (const branch of item.oneOf) {
     const [kind] = branch.required
@@ -878,13 +878,13 @@ test('编辑参数 schema 保持根级 object，并用 items.oneOf 强制一项�
     assert.deepEqual(Object.keys(branch.properties), [kind])
   }
 
+  // 替换模式下的 scoped edit 与全局工具形状一致（同一锚定-only schema）；
+  // 文案里的 readToolName 相应换为 read。
   const strictHarness = createHarness({ settings: { replaceBuiltinEdit: true } })
   apply(strictHarness.ctx)
   const strictParameters = strictHarness.viewTool('edit').parameters
   assert.deepEqual(strictParameters.required, ['file_path', 'edits'])
-  assert.equal(strictParameters.properties.old_string, undefined)
-  assert.equal(strictParameters.properties.new_string, undefined)
-  assert.equal(strictParameters.properties.replace_all, undefined)
+  assert.deepEqual(Object.keys(strictParameters.properties).sort(), ['edits', 'file_path'])
   assert.deepEqual(strictParameters.properties.edits.items.oneOf.map(branch => branch.required[0]), [
     'set_line',
     'replace_lines',
@@ -965,59 +965,33 @@ test('hashline_read presentResult 对错误与畸形数据回退 undefined', asy
   }), undefined)
 })
 
-test('hashline_edit native 分支按 old_string/new_string 执行唯一替换', async () => {
+test('hashline_edit 拒绝 old_string/new_string 并指引使用内置 edit', async () => {
   const harness = createHarness({ content: 'alpha\nbeta = 1\n' })
   apply(harness.ctx)
   const tool = harness.tools.get('hashline_edit')
-  const result = await tool.execute({
+  const resolvesBefore = harness.resolveCalls.length
+  await assert.rejects(tool.execute({
     file_path: 'sample.txt',
     old_string: 'beta = 1',
     new_string: 'beta = 2',
-  }, harness.exec)
-
-  assert.equal(harness.content, 'alpha\nbeta = 2\n')
-  assert.equal(result.changed, true)
-  assert.equal(result.replacements, 1)
-  // native 分支同样走稳定读取、观察与版本 CAS。
-  assert.equal(harness.waterfallCalls[0].name, 'fs/write-intent')
-  assert.deepEqual(harness.writeCalls[0].expected, { kind: 'replaceIfVersion', version: 'v1' })
-})
-
-test('hashline_edit native 分支支持 replace_all 与空 new_string 删除', async () => {
-  const harness = createHarness({ content: 'x x x\n' })
-  apply(harness.ctx)
-  const tool = harness.tools.get('hashline_edit')
-  const all = await tool.execute({
+  }, harness.exec), error => {
+    assert.equal(error.code, 'HASHLINE_INVALID_ARGUMENT')
+    assert.match(error.message, /use the built-in edit for old_string\/new_string literal replacement/)
+    return true
+  })
+  await assert.rejects(tool.execute({
     file_path: 'sample.txt',
     old_string: 'x',
     new_string: 'y',
     replace_all: true,
-  }, harness.exec)
-  assert.equal(harness.content, 'y y y\n')
-  assert.equal(all.replacements, 3)
-
-  const deleted = await tool.execute({
-    file_path: 'sample.txt',
-    old_string: 'y',
-    new_string: '',
-    replace_all: true,
-  }, harness.exec)
-  assert.equal(harness.content, '  \n')
-  assert.equal(deleted.replacements, 3)
+  }, harness.exec), error => error.code === 'HASHLINE_INVALID_ARGUMENT')
+  // 拒绝发生在 sandbox、审批与任何文件 I/O 之前。
+  assert.equal(harness.resolveCalls.length, resolvesBefore)
+  assert.equal(harness.writeCalls.length, 0)
+  assert.equal(harness.content, 'alpha\nbeta = 1\n')
 })
 
-test('hashline_edit 忽略适配器为未选输入物化的空默认值', async () => {
-  const nativeHarness = createHarness({ content: 'alpha\nbeta = 2\n' })
-  apply(nativeHarness.ctx)
-  await nativeHarness.tools.get('hashline_edit').execute({
-    file_path: 'sample.txt',
-    old_string: 'beta = 2',
-    new_string: 'beta = 3',
-    replace_all: false,
-    edits: [],
-  }, nativeHarness.exec)
-  assert.equal(nativeHarness.content, 'alpha\nbeta = 3\n')
-
+test('hashline_edit 忽略适配器为未选变体物化的空哨兵', async () => {
   const anchoredHarness = createHarness({ content: 'alpha\nbeta = 2\n' })
   apply(anchoredHarness.ctx)
   const read = await readAnchors(anchoredHarness)
@@ -1034,17 +1008,16 @@ test('hashline_edit 忽略适配器为未选输入物化的空默认值', async 
     }],
   }, anchoredHarness.exec)
   assert.equal(anchoredHarness.content, 'alpha\nbeta = 3\n')
-})
-test('hashline_edit native 非 all 的重复匹配按安全语义拒绝', async () => {
-  const harness = createHarness({ content: 'beta = 1\nbeta = 1\n' })
-  apply(harness.ctx)
-  await assert.rejects(harness.tools.get('hashline_edit').execute({
+
+  // 非空 replace 变体被拒绝并指引内置 edit。
+  await assert.rejects(anchoredHarness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
-    old_string: 'beta = 1',
-    new_string: 'gamma',
-  }, harness.exec), error => error.code === 'HASHLINE_TEXT_NOT_UNIQUE')
-  assert.equal(harness.writeCalls.length, 0)
-  assert.equal(harness.content, 'beta = 1\nbeta = 1\n')
+    edits: [{ replace: { old_text: 'beta = 3', new_text: 'beta = 4' } }],
+  }, anchoredHarness.exec), error => {
+    assert.equal(error.code, 'HASHLINE_INVALID_ARGUMENT')
+    assert.match(error.message, /replace is not accepted; use the built-in edit/)
+    return true
+  })
 })
 
 test('hashline_edit 拒绝混合或缺失的两种输入', async () => {
@@ -1072,34 +1045,32 @@ test('hashline_edit 拒绝混合或缺失的两种输入', async () => {
   assert.equal(harness.resolveCalls.length, resolvesBefore)
 })
 
-test('hashline_edit presentCall 按输入分支选择 pending 展示', async () => {
+test('hashline_edit presentCall 对任何输入都保持简洁 edit intent', async () => {
   const harness = createHarness({ content: 'a\nb\n' })
   apply(harness.ctx)
   const tool = harness.tools.get('hashline_edit')
 
-  const native = tool.presentCall({ file_path: 'sample.txt', old_string: 'a', new_string: 'b' })
-  assert.equal(native.card, 'diff')
-  assert.deepEqual(native.diffs, [{ path: 'sample.txt', oldText: 'a', newText: 'b' }])
-  assert.deepEqual(native.locations, [{ path: 'sample.txt' }])
-
-  const replace = tool.presentCall({ file_path: 'sample.txt', edits: [{ replace: { old_text: 'a', new_text: 'b' } }] })
-  assert.equal(replace.card, 'diff')
-  assert.deepEqual(replace.diffs, [{ path: 'sample.txt', oldText: 'a', newText: 'b' }])
-
+  // 锚定编辑没有旧文本可展示，不伪造 diff；旧 native 输入同样只是 generic
+  // intent（真正执行时会被拒绝）。
   const anchored = tool.presentCall({ file_path: 'sample.txt', edits: [{ set_line: { anchor: '1:abcd', new_text: 'b' } }] })
   assert.equal(anchored.card, 'generic')
   assert.equal(anchored.kind, 'edit')
   assert.deepEqual(anchored.locations, [{ path: 'sample.txt' }])
+
+  const legacyNative = tool.presentCall({ file_path: 'sample.txt', old_string: 'a', new_string: 'b' })
+  assert.equal(legacyNative.card, 'generic')
+  assert.equal(legacyNative.kind, 'edit')
+  assert.equal(legacyNative.diffs, undefined)
 })
 
 test('hashline_edit 成功结果生成 diff meta 与原生 diff 卡，无变化时安全回退', async () => {
   const harness = createHarness({ content: 'alpha\nbeta\n' })
   apply(harness.ctx)
   const tool = harness.tools.get('hashline_edit')
+  const read = await readAnchors(harness)
   const result = await tool.execute({
     file_path: 'sample.txt',
-    old_string: 'beta',
-    new_string: 'gamma',
+    edits: [{ set_line: { anchor: read.lines[1].anchor, new_text: 'gamma' } }],
   }, harness.exec)
 
   assert.ok(result.presentation.diffs.length >= 1)
@@ -1124,7 +1095,6 @@ test('hashline_edit 成功结果生成 diff meta 与原生 diff 卡，无变化�
 
   // 无变化编辑没有 hunks，但 presentationMeta 必须仍返回 lossless JSON；
   // 真实 ToolRuntime 会拒绝 undefined projector，空 diffs 再由 presentResult 回退 generic。
-  const read = await readAnchors(harness)
   const noop = await tool.execute({
     file_path: 'sample.txt',
     edits: [{ set_line: { anchor: read.lines[0].anchor, new_text: 'alpha' } }],
@@ -1162,10 +1132,10 @@ test('hashline_edit 模型文本保留确认与更新锚点', async () => {
   const harness = createHarness({ content: 'alpha\nbeta\n' })
   apply(harness.ctx)
   const tool = harness.tools.get('hashline_edit')
+  const read = await readAnchors(harness)
   const result = await tool.execute({
     file_path: 'sample.txt',
-    old_string: 'beta',
-    new_string: 'gamma',
+    edits: [{ set_line: { anchor: read.lines[1].anchor, new_text: 'gamma' } }],
   }, harness.exec)
   const [block] = tool.output.render({ file_path: 'sample.txt' }, result)
   assert.equal(block.type, 'text')
@@ -1276,7 +1246,7 @@ test('替换模式下 scoped edit 使用 edit/read 错误名并严格拒绝无�
     new_string: 'beta',
   }, harness.exec), error => {
     assert.equal(error.code, 'HASHLINE_INVALID_ARGUMENT')
-    assert.match(error.message, /requires fresh LINE:HASH anchors/)
+    assert.match(error.message, /use the built-in edit for old_string\/new_string literal replacement/)
     return true
   })
   await assert.rejects(editTool.execute({
@@ -1284,7 +1254,7 @@ test('替换模式下 scoped edit 使用 edit/read 错误名并严格拒绝无�
     edits: [{ replace: { old_text: 'BETA', new_text: 'beta' } }],
   }, harness.exec), error => {
     assert.equal(error.code, 'HASHLINE_INVALID_ARGUMENT')
-    assert.match(error.message, /^edit only accepts LINE:HASH-anchored/)
+    assert.match(error.message, /replace is not accepted; use the built-in edit/)
     return true
   })
   assert.equal(harness.resolveCalls.length, resolvesBeforeUnanchored)
