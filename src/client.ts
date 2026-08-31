@@ -69,6 +69,12 @@ const zh = {
   invalid: '请修正超出范围或非整数的数值。',
   saveFailed: '保存失败：',
   saveNotApplied: '主程序未接受全部设置，已保留草稿。',
+  // 读取卡 chrome 词条：复制/收起等共享词由 DSH common vocabulary 提供，
+  // 这里只注册 ReadBlock 专属的窗口与展开文案（对齐原生 read 卡）。
+  'read.window': '显示 {shown} / {total} 行',
+  'read.collapseAria': '收起内容',
+  'read.expandAria': '展开其余 {count} 行',
+  'read.expandRest': '… 其余 {count} 行',
 }
 
 const en = {
@@ -105,6 +111,12 @@ const en = {
   invalid: 'Fix out-of-range or non-integer values.',
   saveFailed: 'Save failed:',
   saveNotApplied: 'The host did not accept all settings; the draft was kept.',
+  // Read-card chrome: shared copy/collapse words come from the DSH common
+  // vocabulary; only the ReadBlock-specific window/expand strings live here.
+  'read.window': 'Showing {shown} of {total} lines',
+  'read.collapseAria': 'Collapse content',
+  'read.expandAria': 'Expand {count} more lines',
+  'read.expandRest': '… {count} more lines',
 }
 
 const responsiveCss = [
@@ -538,7 +550,6 @@ interface HashlineReadLine {
 }
 
 interface HashlineReadView {
-  card: 'read'
   path: string
   offset: number
   lines: HashlineReadLine[]
@@ -565,8 +576,13 @@ function normalizeHashlineReadLine(value: unknown): HashlineReadLine | undefined
 
 function hashlineReadView(block: any): HashlineReadView | undefined {
   if (block === null || typeof block !== 'object' || block.kind !== 'tool-result') return undefined
-  const view = block.resultView
-  if (view === null || typeof view !== 'object' || view.card !== 'read') return undefined
+  if (block.isError === true) return undefined
+  // DSH 0.1.2 起 presentResult 视图（block.resultView）已被整体移除；读取卡的
+  // 数据源是 Host output.presentationMeta 持久化进 tool/result 的 block.meta
+  // （{ path, offset, lines: [{ number, hash, text }], totalLines, lang? }）。
+  // 行结构的哈希校验天然排除官方 read 的无哈希投影与其它工具的 meta。
+  const view = block.meta
+  if (view === null || typeof view !== 'object' || Array.isArray(view)) return undefined
   if (typeof view.path !== 'string' || !Number.isInteger(view.offset) || view.offset < 1) return undefined
   if (!Number.isInteger(view.totalLines) || view.totalLines < 0 || !Array.isArray(view.lines)) return undefined
   if (view.lang !== undefined && typeof view.lang !== 'string') return undefined
@@ -580,7 +596,7 @@ function hashlineReadView(block: any): HashlineReadView | undefined {
   }
   if (lines.length > 0 && lines[0].number !== view.offset) return undefined
   return {
-    card: 'read', path: view.path, offset: view.offset, lines, totalLines: view.totalLines,
+    path: view.path, offset: view.offset, lines, totalLines: view.totalLines,
     ...(view.lang === undefined ? {} : { lang: view.lang }),
   }
 }
@@ -617,9 +633,12 @@ function normalizeHashlineDiff(value: unknown): HashlineDiffHunk | undefined {
 
 function hashlineDiffs(block: any): HashlineDiffHunk[] | undefined {
   if (block === null || typeof block !== 'object' || block.kind !== 'tool-result' || block.isError === true) return undefined
-  const view = block.resultView
-  if (view === null || typeof view !== 'object' || view.card !== 'diff' || !Array.isArray(view.diffs) || view.diffs.length === 0) return undefined
-  const diffs = view.diffs.map(normalizeHashlineDiff)
+  // 与读取卡同源：block.meta 携带 presentationMeta 投影的 { diffs }（旧
+  // resultView.card === 'diff' 通道在 DSH 0.1.2 中已不存在）。
+  const meta = block.meta
+  if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) return undefined
+  if (!Array.isArray(meta.diffs) || meta.diffs.length === 0) return undefined
+  const diffs = meta.diffs.map(normalizeHashlineDiff)
   return diffs.every((diff: HashlineDiffHunk | undefined) => diff !== undefined) ? diffs as HashlineDiffHunk[] : undefined
 }
 
@@ -795,10 +814,9 @@ function HashlineDiffBlock({ diffs, maxLines = 8 }: { diffs: HashlineDiffHunk[];
           type: 'button', style: uiStyles.toolInspect, onClick: props.inspect,
         }, 'Inspect'))
       const status = rowStatusText(state)
-      return h('div', { 'data-variant': 'edit', 'data-tool': props.toolName, 'data-state': state },
+      return h('div', { 'data-variant': 'edit', 'data-tool': props.toolName, 'data-state': state, style: uiStyles.toolRow },
         status === null ? null : h('span', { style: uiStyles.visuallyHidden }, status),
         h(DisclosureRow, {
-          style: uiStyles.toolRow,
           icon: h(StateDot, { state }),
           title: 'Edit',
           open: isOpen,
@@ -827,9 +845,12 @@ function filePathFromBlock(block: any): string | undefined {
  * ReadBlock 运行时只把 `number` 当 React children/key 使用；这里专用 toolview
  * 有意传入 `LINE|HASH` 字符串，让完整锚点进入原生灰色、aria-hidden gutter。
  */
-  function createHashlineReadRow(): (props: any) => any {
+  function createHashlineReadRow(fallbackT: (key: string, params?: Record<string, unknown>) => string): (props: any) => any {
     const h = React.createElement
     return function HashlineReadRow(props: any): any {
+      // 注册声明 locale 后框架注入 t 座位（随界面语言切换重渲染）；
+      // 未注入的旧宿主回退 apply 闭包里的 bind 结果。
+      const t = typeof props.t === 'function' ? props.t : fallbackT
       const view = hashlineReadView(props.block)
       const [open, setOpen] = React.useState(false)
       const path = filePathFromBlock(props.block) ?? view?.path ?? props.callId ?? ''
@@ -845,6 +866,20 @@ function filePathFromBlock(block: any): string | undefined {
       const lines = view?.lines.map(function (line) {
         return { number: `${line.number}|${line.hash}`, text: line.text }
       }) ?? []
+      // ReadBlock 自 0.1.1-rc 起把 chrome 文案作为必需 labels 传入（缺省会在
+      // 展开渲染时抛 TypeError，读取卡无法展开）；copy/copied/collapse 取自
+      // DSH 共享 common vocabulary，窗口与展开词条来自本插件 namespace。
+      const readLabels = React.useMemo(function () {
+        return {
+          window: function (shown: number, total: number) { return t('read.window', { shown, total }) },
+          copy: t('copy'),
+          copied: t('copied'),
+          collapseAria: t('read.collapseAria'),
+          expandAria: function (count: number) { return t('read.expandAria', { count }) },
+          collapse: t('collapse'),
+          expand: function (count: number) { return t('read.expandRest', { count }) },
+        }
+      }, [t])
       const state = running ? 'ongoing' : error ? 'error' : 'done'
       const errorLine = errorText === '' ? null : h('span', { style: uiStyles.errorSummary, title: errorText }, firstLineOf(errorText))
       // 对齐原生 ToolRow：错误行的折叠摘要 = 分隔点 + 错误首行（红字），不显示文件路径；
@@ -858,22 +893,23 @@ function filePathFromBlock(block: any): string | undefined {
           onKeyDown: function (event: any) { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
         }, path))
       const body = !isOpen ? null : errorText !== '' ? errorIoCard(errorText, props.inspect) : view === undefined ? null : h(React.Fragment, null,
-        h(ReadBlock, {
-          style: uiStyles.readBody,
-          label: view.path,
-          lines,
-          totalLines: view.totalLines,
-          lang: view.lang,
-          maxLines: 8,
-        }),
+        // ReadBlock 只接受 className 定位；外边距由插件自己的包裹元素承担。
+        h('div', { style: uiStyles.readBody },
+          h(ReadBlock, {
+            label: view.path,
+            labels: readLabels,
+            lines,
+            totalLines: view.totalLines,
+            lang: view.lang,
+            maxLines: 8,
+          })),
         props.inspect === undefined ? null : h('button', {
           type: 'button', style: uiStyles.toolInspect, onClick: props.inspect,
         }, 'Inspect'))
       const status = rowStatusText(state)
-      return h('div', { 'data-variant': 'read', 'data-tool': props.toolName, 'data-state': state },
+      return h('div', { 'data-variant': 'read', 'data-tool': props.toolName, 'data-state': state, style: uiStyles.toolRow },
         status === null ? null : h('span', { style: uiStyles.visuallyHidden }, status),
         h(DisclosureRow, {
-          style: uiStyles.toolRow,
           icon: h(StateDot, { state }),
           title: 'Read',
           open: isOpen,
@@ -900,12 +936,12 @@ function apply(ctx: any): void {
       locale: LOCALE_NAMESPACE,
     }, Card)
   })
-  const HashlineReadRow = createHashlineReadRow()
+  const HashlineReadRow = createHashlineReadRow(t)
   const HashlineEditRow = createHashlineEditRow()
 
   ctx.slots.inject('tool.call.toolview', function* () {
-    yield ctx.slots.register({ name: 'tool.call.toolview', key: 'hashline_read' }, HashlineReadRow)
-    yield ctx.slots.register({ name: 'tool.call.toolview', key: 'hashline_edit' }, HashlineEditRow)
+    yield ctx.slots.register({ name: 'tool.call.toolview', key: 'hashline_read', locale: LOCALE_NAMESPACE }, HashlineReadRow)
+    yield ctx.slots.register({ name: 'tool.call.toolview', key: 'hashline_edit', locale: LOCALE_NAMESPACE }, HashlineEditRow)
   })
   // 只有 Host 确实用 Hashline 替换内置 read 时才接管 shipped `read-row`；
   // 默认模式绝不遮蔽普通内置 read 的原生工具卡。
@@ -919,8 +955,8 @@ function apply(ctx: any): void {
           // Shipped read/edit toolviews occupy priority 0. Keyed slots render the
           // lowest live priority, so -100 shadows them without replacing their Fiber;
           // disposing this contribution restores the shipped rows immediately.
-          yield ctx.slots.register({ name: 'tool.call.toolview', key: 'read', priority: -100 }, HashlineReadRow)
-          yield ctx.slots.register({ name: 'tool.call.toolview', key: 'edit', priority: -100 }, HashlineEditRow)
+          yield ctx.slots.register({ name: 'tool.call.toolview', key: 'read', priority: -100, locale: LOCALE_NAMESPACE }, HashlineReadRow)
+          yield ctx.slots.register({ name: 'tool.call.toolview', key: 'edit', priority: -100, locale: LOCALE_NAMESPACE }, HashlineEditRow)
         })
       } else if (!shouldOwnBuiltins && disposeBuiltins !== undefined) {
         disposeBuiltins()

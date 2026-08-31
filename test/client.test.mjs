@@ -212,8 +212,8 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
   })
 
   assert.deepEqual(slotRegistrations.slice(1).map(item => item.options), [
-    { name: 'tool.call.toolview', key: 'hashline_read' },
-    { name: 'tool.call.toolview', key: 'hashline_edit' },
+    { name: 'tool.call.toolview', key: 'hashline_read', locale: 'settings.hashline' },
+    { name: 'tool.call.toolview', key: 'hashline_edit', locale: 'settings.hashline' },
   ])
   const Card = slotRegistrations[0].Component
   let tree = reactHarness.render(Card)
@@ -293,8 +293,8 @@ test('替换内置 toolview 使用低优先级阴影并可逆清理', async () =
   }
   exports.apply(ctx)
   assert.deepEqual(registrations.filter(item => item.options.key === 'read' || item.options.key === 'edit').map(item => item.options), [
-    { name: 'tool.call.toolview', key: 'read', priority: -100 },
-    { name: 'tool.call.toolview', key: 'edit', priority: -100 },
+    { name: 'tool.call.toolview', key: 'read', priority: -100, locale: 'settings.hashline' },
+    { name: 'tool.call.toolview', key: 'edit', priority: -100, locale: 'settings.hashline' },
   ])
   snapshot = { ...snapshot, value: { enabled: true, replaceBuiltinEdit: false }, revision: 1 }
   for (const listener of listeners) listener()
@@ -340,8 +340,8 @@ test('Hashline 读取 toolview 复用原生 ReadBlock 并把完整 LINE|HASH 传
   const block = {
     kind: 'tool-result', callId: 'call-1', isError: false,
     call: { name: 'hashline_read', argsRaw: JSON.stringify({ file_path: 'demo.ts' }) },
-    resultView: {
-      card: 'read', path: 'demo.ts', offset: 1, totalLines: 1, lang: 'ts',
+    meta: {
+      path: 'demo.ts', offset: 1, totalLines: 1, lang: 'ts',
       lines: [{ number: 1, hash: 'b6a9', text: 'const alpha = 1' }],
     },
   }
@@ -360,10 +360,29 @@ test('Hashline 读取 toolview 复用原生 ReadBlock 并把完整 LINE|HASH 传
   assert.equal(readBlockProps.label, 'demo.ts')
   assert.equal(readBlockProps.lang, 'ts')
   assert.equal(readBlockProps.maxLines, 8)
+  // ReadBlock 契约：chrome 文案经必需 labels 传入（缺省在展开时抛 TypeError），
+  // 定位由外层包裹元素承担而不是 style prop。
+  assert.equal(readBlockProps.style, undefined)
+  assert.equal(readBlockProps.labels.copy, 'copy')
+  assert.equal(readBlockProps.labels.copied, 'copied')
+  assert.equal(readBlockProps.labels.collapse, 'collapse')
+  assert.equal(readBlockProps.labels.collapseAria, 'read.collapseAria')
+  assert.equal(readBlockProps.labels.window(1, 2), 'read.window')
+  assert.equal(readBlockProps.labels.expandAria(3), 'read.expandAria')
+  assert.equal(readBlockProps.labels.expand(3), 'read.expandRest')
   assert.deepEqual(readBlockProps.lines, [{ number: '1|b6a9', text: 'const alpha = 1' }])
+  // 注册声明 locale 后框架注入 t 座位；注入时 labels 优先采用注入的翻译。
+  let injectedLabels
+  reactHarness.render(() => ReadRow({
+    callId: 'call-1', toolName: 'hashline_read', block, openFile: () => {},
+    t: key => `zh:${key}`,
+  }))
+  injectedLabels = readBlockProps.labels
+  assert.equal(injectedLabels.copy, 'zh:copy')
+  assert.equal(injectedLabels.window(3, 9), 'zh:read.window')
 
   // Host 半边尚未热重载时的旧 `{ number, text: '|HASH  正文' }` 投影也要正常显示。
-  block.resultView.lines = [{ number: 1, text: '|b6a9  const alpha = 1' }]
+  block.meta.lines = [{ number: 1, text: '|b6a9  const alpha = 1' }]
   readBlockProps = undefined
   reactHarness.render(() => ReadRow({
     callId: 'call-1', toolName: 'hashline_read', block, openFile: () => {},
@@ -402,7 +421,7 @@ test('Hashline 编辑 toolview 把 -|旧HASH / +|新HASH 作为灰色不可选 g
   const block = {
     kind: 'tool-result', callId: 'edit-1', isError: false,
     call: { name: 'hashline_edit', argsRaw: JSON.stringify({ file_path: 'demo.ts' }) },
-    resultView: { card: 'diff', title: 'Edit demo.ts', diffs: [{
+    meta: { diffs: [{
       path: 'demo.ts', oldText: 'const beta = 2', newText: 'const beta = 3',
       oldHashes: ['ab9b'], newHashes: ['8359'],
     }] },
@@ -461,7 +480,7 @@ test('Hashline 读取 toolview 对畸形行号回放安全回退', async () => {
   const block = {
     kind: 'tool-result', callId: 'call-invalid', isError: false,
     call: { name: 'hashline_read', argsRaw: '{}' },
-    resultView: { card: 'read', path: 'bad.txt', offset: 1, totalLines: 2, lines: [
+    meta: { path: 'bad.txt', offset: 1, totalLines: 2, lines: [
       { number: 2, hash: 'aaaa', text: 'two' },
       { number: 1, hash: 'bbbb', text: 'one' },
     ] },
@@ -502,7 +521,6 @@ test('Hashline 编辑 toolview 对失败结果可展开并展示错误文本', a
     kind: 'tool-result', callId: 'edit-err', isError: true,
     call: { name: 'hashline_edit', argsRaw: JSON.stringify({ file_path: 'src/index.ts' }) },
     content: [{ type: 'text', text: message }],
-    resultView: null,
   }
   const props = { callId: 'edit-err', toolName: 'hashline_edit', block, openFile: () => {} }
   // 失败结果必须可展开（修复前 expandable=false，点缩放无效果）。
