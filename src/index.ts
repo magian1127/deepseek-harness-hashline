@@ -184,7 +184,8 @@ interface SettingsService {
 
 interface Agent {
   id?: unknown
-  session?: { header?: { cwd?: string; id?: unknown } }
+  // session.id 与 session.header.id 都是 DSH 会话标识(header.id 是历史/裸形态)。
+  session?: { id?: unknown; header?: { cwd?: string; id?: unknown } }
   ctx?: {
     tools?: ToolRegistration
     get?: (name: string) => unknown
@@ -242,6 +243,11 @@ interface DshContext {
   on(name: string, handler: (payload: unknown) => void): unknown
   emit(name: string, ...args: unknown[]): void
   waterfall(name: string, ...args: unknown[]): Promise<unknown>
+}
+
+/** dsh-agent-presets 服务的最小形状:只读取一个 agent 已加入的 preset id。极简模式(minimal)是双工具组合,Hashline 不得在其中注入任何表面。 */
+interface AgentPresetsService {
+  composedPreset?(agentCtx: unknown): string | undefined
 }
 
 // ---------------------------------------------------------------------------
@@ -1200,13 +1206,48 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
     ctx.logger?.warn?.(`dsh-hashline: could not replace built-in read/edit for agent ${String(agentId)}: ${errorMessage(error)}`)
   }
 
+  function isMinimalAgent(agent: Agent): boolean {
+    // 任何判定失败只回退为非极简,绝不向事件总线抛错(Cordis emit 同步串联)。
+    try {
+      const agentPresets = ctx.get('agentPresets') as AgentPresetsService | undefined | null
+      if (agentPresets === undefined || agentPresets === null) return false
+      if (typeof agentPresets.composedPreset !== 'function') return false
+      return agentPresets.composedPreset(agent.ctx) === 'minimal'
+    } catch {
+      return false
+    }
+  }
+
   function installReplacement(agent: Agent): void {
-    if (replacementDisposers.has(agent)) return
+    // 先撤销该 agent 已安装的表面(替换或极简 deny),再按当前 preset 重装。
+    // 支撑会话中途 recompose(如 cordis -> minimal)后工具面的重新评估。
+    const existing = replacementDisposers.get(agent)
+    if (existing !== undefined) {
+      try { existing() } catch { /* 继续按当前状态重建。 */ }
+      replacementDisposers.delete(agent)
+    }
     const scopedTools = agent?.ctx?.tools ?? (agent?.ctx?.get?.('tools') as ToolRegistration | undefined)
     if (scopedTools === undefined) {
       warnReplacement(agent, new Error('agent context has no tools service'))
       return
     }
+    // 极简模式:不注册 own-scope read/edit 替换,并在 Agent 自身作用域 deny
+    // 全局 hashline_read/hashline_edit,让该预设的隐藏策略不被本插件突破。
+    // 该 deny 与 replaceBuiltinEdit 开关无关:只要插件 enabled(调用方保证),
+    // 极简 agent 就必须隐藏全局 hashline 工具。
+    if (isMinimalAgent(agent)) {
+      const disposeRestriction = scopedTools.restrict?.({ deny: ['hashline_read', 'hashline_edit'] })
+      let active = true
+      replacementDisposers.set(agent, () => {
+        if (!active) return
+        active = false
+        disposeRestriction?.()
+      })
+      return
+    }
+    // 未开启“替换原版工具”:非极简 Agent 不做任何 own-scope 表面,全局
+    // hashline_read/hashline_edit 按插件 enabled 自然可见。
+    if (!current.replaceBuiltinEdit) return
     // Preserve preset policy: an own-layer tool must not revive a built-in
     // read/edit or a hashline capability that the agent's inherited view hid.
     if (
@@ -1283,9 +1324,9 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
     current = resolved
     if (!resolved.enabled) return
     globalDisposers.push(...registerGlobalSurface(resolved))
-    if (resolved.replaceBuiltinEdit) {
-      for (const agent of ctx.agents.list()) installReplacement(agent)
-    }
+    // 极简 deny 与替换表面都要按当前设置重装:即便 replaceBuiltinEdit 关闭,
+    // 极简 agent 仍需在作用域内隐藏全局 hashline 工具。
+    for (const agent of ctx.agents.list()) installReplacement(agent)
   }
 
   ctx.effect(
@@ -1305,14 +1346,54 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
           }),
     'dsh-hashline: settings watch',
   )
+  function agentBySession(sessionId: unknown): Agent | undefined {
+    const list = (ctx.agents as unknown as AgentsService | undefined | null)?.list?.() ?? []
+    return list.find(
+      (agent) =>
+        agent?.session?.header?.id === sessionId ||
+        agent?.session?.id === sessionId ||
+        agent?.id === sessionId,
+    )
+  }
+
+  function reinstallForAgent(agent: Agent): void {
+    try {
+      installReplacement(agent)
+    } catch (error) {
+      warnReplacement(agent, error)
+    }
+  }
+
   ctx.on('agent/created', (payload: unknown) => {
-    const { agent } = payload as { agent: Agent }
-    if (!stopped && current.enabled && current.replaceBuiltinEdit) installReplacement(agent)
+    try {
+      const { agent } = payload as { agent: Agent }
+      if (!stopped && current.enabled) reinstallForAgent(agent)
+    } catch (error) {
+      ctx.logger?.warn?.(`dsh-hashline: agent/created 监听失败: ${errorMessage(error)}`)
+    }
   })
   ctx.on('agent/disposed', (payload: unknown) => {
     const { agent } = payload as { agent: Agent }
     // Scoped tool effects have already unwound before this event.
     replacementDisposers.delete(agent)
+  })
+  // 会话中途更换预设(DSH recompose 后显式 emit 的官方通知):own-scope 替换
+  // 或极简 deny 必须按新 preset 重新评估,否则 cordis -> minimal 会残留注入。
+  // agent-preset/selected 带会话标识,精准定位受影响 agent。
+  //
+  // 注意:绝不能监听 tools/change 来“兜底重查全部 live agent”。工具注册/注销
+  // 会同步 emit tools/change(ScopedLayers.effect 的 onChange),而 installReplacement
+  // 又会注册/注销工具,形成同步无限递归并卡死会话创建(曾导致“装了本插件无法新会话”)。
+  // 事件监听器必须绝不抛异常(Cordis emit 同步串联,监听器抛错会中断 DSH 的会话
+  // 流程,导致对话卡死);全部内部 try/catch,失败仅记录告警。
+  ctx.on('agent-preset/selected', (sessionId: unknown) => {
+    try {
+      if (stopped || !current.enabled) return
+      const agent = agentBySession(sessionId)
+      if (agent !== undefined) reinstallForAgent(agent)
+    } catch (error) {
+      ctx.logger?.warn?.(`dsh-hashline: agent-preset/selected 监听失败: ${errorMessage(error)}`)
+    }
   })
 
   refresh((settings === undefined ? baseConfig : settings.get()) as Record<string, unknown>)

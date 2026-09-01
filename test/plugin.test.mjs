@@ -46,7 +46,7 @@ function createHarness(options = {}) {
     for (const handler of eventHandlers.get(name) ?? []) handler(payload)
   }
 
-  function makeAgent(id, hiddenTools = [], announce = false) {
+    function makeAgent(id, hiddenTools = [], announce = false, preset = options.preset) {
     const scopedPrompt = new Map()
     const session = { header: { cwd: 'C:\\workspace', id } }
     const scoped = new Map()
@@ -91,6 +91,7 @@ function createHarness(options = {}) {
       agent.ctx = {
         tools: scopedTools,
         systemPrompt: scopedPromptService,
+        __preset: preset,
         get(name) {
           if (name === 'tools') return scopedTools
           if (name === 'systemPrompt') return scopedPromptService
@@ -102,6 +103,7 @@ function createHarness(options = {}) {
       agent.__scopedPrompt = scopedPrompt
       agent.__inheritedHidden = inheritedHidden
     agent.__inheritedHidden = inheritedHidden
+    agent.__preset = preset
     liveAgents.push(agent)
     if (announce) dispatch('agent/created', { agent })
     return agent
@@ -166,6 +168,11 @@ function createHarness(options = {}) {
           return { mode: options.policyMode ?? options.sandboxMode, workspaceRoot: 'C:\\workspace' }
         },
       }
+    const agentPresetsService = options.agentPresetsService ?? {
+      composedPreset(agentCtx) {
+        return agentCtx?.__preset
+      },
+    }
 
   const approval = {
     async request(request) {
@@ -239,6 +246,7 @@ function createHarness(options = {}) {
       if (name === 'sandboxPolicy') return policyService
       if (name === 'approval') return approval
       if (name === 'hmr') return options.hmr
+        if (name === 'agentPresets') return options.agentPresetsService === false ? undefined : agentPresetsService
       return undefined
     },
     effect(setup) {
@@ -282,8 +290,8 @@ function createHarness(options = {}) {
       settingsState = { ...settingsState, ...patch }
       for (const watcher of settingsWatchers) watcher(settingsState, previous)
     },
-    createAgent(id = `agent-${liveAgents.length + 1}`, hiddenTools = []) {
-      return makeAgent(id, hiddenTools, true)
+    createAgent(id = `agent-${liveAgents.length + 1}`, hiddenTools = [], preset) {
+      return makeAgent(id, hiddenTools, true, preset)
     },
     removeAgent(targetAgent) {
       const index = liveAgents.indexOf(targetAgent)
@@ -291,6 +299,9 @@ function createHarness(options = {}) {
       targetAgent.__scopedTools.clear()
       targetAgent.__restrictions.length = 0
       dispatch('agent/disposed', { agent: targetAgent })
+    },
+    dispatchEvent(name, payload) {
+      dispatch(name, payload)
     },
     viewTool(name, targetAgent = agent) {
       return ctx.tools.get(name, targetAgent)
@@ -511,6 +522,108 @@ test('read/edit 替换覆盖后创建的 Agent，并尊重 preset 隐藏策略',
   assert.equal(harness.viewTool('hashline_edit', builtinReadHidden).name, 'hashline_edit')
   assert.equal(harness.viewTool('read', builtinReadHidden), undefined)
   assert.equal(harness.viewTool('hashline_read', builtinReadHidden).name, 'hashline_read')
+})
+
+test('极简模式(minimal)下不注入 read/edit 替换并隐藏全局 Hashline 工具', () => {
+  const harness = createHarness({ settings: { replaceBuiltinEdit: true } })
+  apply(harness.ctx)
+
+  // 极简 agent(createAgent 第 3 参传 preset id):不注册 own-scope read/edit
+  // 替换、不注入提示词阴影,并把全局 hashline_read/hashline_edit 在 Agent 作用域
+  // deny,维持该预设“仅持久 shell + str_replace_editor”的双工具承诺。
+  const minimal = harness.createAgent('agent-minimal', [], 'minimal')
+  assert.equal(harness.viewTool('edit', minimal).source, 'tool-fs')
+  assert.equal(harness.viewTool('read', minimal).source, 'tool-fs')
+  assert.equal(harness.viewTool('hashline_edit', minimal), undefined)
+  assert.equal(harness.viewTool('hashline_read', minimal), undefined)
+  assert.equal(minimal.__scopedPrompt.size, 0)
+
+  // 非极简 agent 的替换行为保持不变。
+  const standard = harness.createAgent('agent-standard')
+  assert.equal(harness.viewTool('edit', standard).source, undefined)
+  assert.equal(harness.viewTool('read', standard).source, undefined)
+  assert.equal(harness.viewTool('hashline_edit', standard), undefined)
+
+  // 覆盖后(agent/created 路径)创建的极简 agent 同样豁免。
+  const minimalLater = harness.createAgent('agent-minimal-later', [], 'minimal')
+  assert.equal(harness.viewTool('edit', minimalLater).source, 'tool-fs')
+  assert.equal(harness.viewTool('hashline_read', minimalLater), undefined)
+  assert.equal(harness.viewTool('hashline_edit', minimalLater), undefined)
+})
+
+test('未开启替换时极简模式仍隐藏全局 Hashline 工具(deny 与 replaceBuiltinEdit 无关)', () => {
+  const harness = createHarness({ settings: { replaceBuiltinEdit: false } })
+  apply(harness.ctx)
+
+  // 非极简 agent:全局 hashline 工具按 enabled 可见,但不注册 own-scope read/edit
+  // 替换(内置 read/edit 保持原版)。回归:曾因极简 deny 被放在替换分支内,
+  // 关闭 replaceBuiltinEdit 后极简 agent 的全局 hashline 工具重新泄露。
+  const standard = harness.createAgent('agent-noreplace-standard')
+  assert.equal(harness.viewTool('edit', standard).source, 'tool-fs')
+  assert.equal(harness.viewTool('read', standard).source, 'tool-fs')
+  assert.equal(harness.viewTool('hashline_read', standard).name, 'hashline_read')
+  assert.equal(harness.viewTool('hashline_edit', standard).name, 'hashline_edit')
+
+  // 极简 agent:全局 hashline 工具仍被作用域 deny,双工具组合不被突破。
+  const minimal = harness.createAgent('agent-noreplace-minimal', [], 'minimal')
+  assert.equal(harness.viewTool('edit', minimal).source, 'tool-fs')
+  assert.equal(harness.viewTool('read', minimal).source, 'tool-fs')
+  assert.equal(harness.viewTool('hashline_read', minimal), undefined)
+  assert.equal(harness.viewTool('hashline_edit', minimal), undefined)
+
+  // 会话中途切换到极简同样立即 deny。
+  const mid = harness.createAgent('agent-noreplace-mid', [], 'cordis')
+  assert.equal(harness.viewTool('hashline_edit', mid).name, 'hashline_edit')
+  mid.ctx.__preset = 'minimal'
+  harness.dispatchEvent('agent-preset/selected', 'agent-noreplace-mid')
+  assert.equal(harness.viewTool('hashline_edit', mid), undefined)
+  assert.equal(harness.viewTool('hashline_read', mid), undefined)
+})
+
+test('dsh-agent-presets 缺失时极简判断跳过,保持既有替换行为', () => {
+  const harness = createHarness({ settings: { replaceBuiltinEdit: true }, agentPresetsService: false })
+  apply(harness.ctx)
+
+  const plain = harness.createAgent('agent-no-presets')
+  assert.equal(harness.viewTool('edit', plain).source, undefined)
+  assert.equal(harness.viewTool('read', plain).source, undefined)
+  assert.equal(harness.viewTool('hashline_edit', plain), undefined)
+  assert.equal(harness.viewTool('hashline_read', plain), undefined)
+})
+
+test('会话中途切换到极简模式时撤销已安装的 read/edit 替换并 deny 全局工具', () => {
+  const harness = createHarness({ settings: { replaceBuiltinEdit: true } })
+  apply(harness.ctx)
+
+  // 先以 cordis 创建:替换安装。
+  const agent = harness.createAgent('agent-mid-switch', [], 'cordis')
+  assert.equal(harness.viewTool('edit', agent).source, undefined)
+  assert.equal(harness.viewTool('read', agent).source, undefined)
+  assert.equal(harness.viewTool('hashline_edit', agent), undefined)
+
+  // 会话中途 recompose 到极简(DSH agent-preset/selected):撤销替换并 deny 全局工具。
+  agent.ctx.__preset = 'minimal'
+  harness.dispatchEvent('agent-preset/selected', 'agent-mid-switch')
+  assert.equal(harness.viewTool('edit', agent).source, 'tool-fs')
+  assert.equal(harness.viewTool('read', agent).source, 'tool-fs')
+  assert.equal(harness.viewTool('hashline_edit', agent), undefined)
+  assert.equal(harness.viewTool('hashline_read', agent), undefined)
+  assert.equal(agent.__scopedPrompt.size, 0)
+
+  // 从极简切回完整 preset:重新安装替换。
+  agent.ctx.__preset = 'standard'
+  harness.dispatchEvent('agent-preset/selected', 'agent-mid-switch')
+  assert.equal(harness.viewTool('edit', agent).source, undefined)
+  assert.equal(harness.viewTool('hashline_edit', agent), undefined)
+
+  // 再切回极简:agent-preset/selected 是唯一重评估入口,再次撤销替换。
+  // 曾尝试用 tools/change 兜底重查全部 live agent——但工具注册/注销会同步
+  // 触发 tools/change,而重装又会注册/注销工具,形成无限递归并卡死会话创建
+  // (ScopedLayers.effect 的 onChange 同步 emit),该监听器已移除。
+  agent.ctx.__preset = 'minimal'
+  harness.dispatchEvent('agent-preset/selected', 'agent-mid-switch')
+  assert.equal(harness.viewTool('edit', agent).source, 'tool-fs')
+  assert.equal(harness.viewTool('hashline_read', agent), undefined)
 })
 
 test('已有 Agent scoped read/edit 冲突时保留原定义并回滚整组替换', () => {

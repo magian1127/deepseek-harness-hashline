@@ -11,7 +11,9 @@
 | `src/core.ts` | 锚点/编辑的纯逻辑 TypeScript 核心（拆分、计划、预览） |
 | `src/presentation.ts` | 展示层纯逻辑：读取 envelope、紧凑 diff hunks、回放 meta 窄化（依赖 `diff`） |
 | `src/runtime-entry.ts` | TypeScript 运行时兼容入口 |
+| `src/bin/dsh-hashline.mts` | 安装 CLI 源码（`install` / `remove` / `status`），`tsc -p tsconfig.cli.json` 编译到 `bin/` |
 | `lib/` | `tsc` 与 `tsdown` 生成的可发布 JavaScript、声明和 bundle，不直接编辑 |
+| `bin/` | 安装 CLI 发布产物（`dsh-hashline.mjs`），随包发布，不直接编辑 |
 | `cordis.patch.yml` | 随包发布的持久 bundle 行 |
 | `test/` | 回归测试（core / presentation / plugin / client） |
 | `src/profile-modules.ts` | 运行时从 profile 解析 DSH peer（schemastery / dsh-llm），失败时降级 |
@@ -76,7 +78,8 @@ npm run build
 
 - `build:host`：用 `tsc` 生成 Host、核心和声明文件；
 - `build:client`：先用 `tsc` 校验客户端并生成声明，再用 `tsdown` 从 `src/client.ts` 生成 DSH `__ModuleLoader__` bundle；
-- `build`：按上述顺序完成两侧构建，避免客户端 bundle 被 Host 编译覆盖。
+- `build:cli`：用 `tsc -p tsconfig.cli.json` 从 `src/bin/dsh-hashline.mts` 生成 `bin/dsh-hashline.mjs`；
+- `build`：按上述顺序完成全部构建，避免客户端 bundle 被 Host 编译覆盖。
 
 不要直接修改 `lib/`；源码修改后重新构建，再进行本地安装或测试。
 
@@ -84,7 +87,7 @@ npm run build
 
 本插件的专属 Host 监视目标是 `lib/index.js`、`lib/core.js`、`lib/presentation.js` 与 `lib/runtime-entry.js`；构建后须观察旧 Fiber 卸载、新 Fiber 激活及工具契约变化。
 
-`lib/client.js` 由 `src/client.ts` 生成。本插件不提供自定义热安装 CLI，也不复制 dsh-zh 的热安装监督器；安装统一使用 `dsh plugin`。
+`lib/client.js` 由 `src/client.ts` 生成。安装通过 `node bin/dsh-hashline.mjs install --profile web --link <目录>`（内部封装 `dsh plugin add`，只走持久 bundle 通道，不部署热行；安装后需重启一次 `dsh web` 生效）；本插件不复制 dsh-zh 的热安装监督器。
 
 ## 运行环境验证与热更新经验
 

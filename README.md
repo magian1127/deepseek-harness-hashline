@@ -46,40 +46,47 @@ CRLF/LF 或空白漂移时的机械可靠性问题。
 
 ## 安装
 
-把下面示例里的 `<绝对路径>` 换成你本机实际的绝对路径。源码目录的 `lib/` 是构建产物；首次开发安装执行 `npm install`，首次安装或源码更新后执行 `npm run build`：
+推荐使用本插件的统一安装 CLI（与 `deepseek-harness-zh_pro`、`deepseek-harness-zhipu_plan_tools` 的
+`node bin/dsh-*.mjs install` 风格一致）。首次源码联调先安装依赖并生成运行产物（`npm install` 会执行
+`prepare` 自动构建；源码更新后重新构建）：
 
 ```powershell
 npm install
 npm run build
+
+node bin/dsh-hashline.mjs install --profile web --link $PWD
 ```
 
-普通本地安装：
+`--link` 必须指向本插件源码目录；它等价于 `dsh plugin --profile web add "link:<绝对路径>/deepseek-harness-hashline"`。
+DSH 依据包的 `dsh.bundle` 声明把本包装进 profile 的 `dsh.profile.bundles`，重启一次 `dsh web` 后自动挂载
+（本插件不做热行部署，也不复制 dsh-zh 的热安装监督器）。
+
+> ⚠️ `link:` 目标目录不存在时，DSH 会把本包判为普通依赖：既不报错，也无法挂载（`dsh.profile.bundles`
+> 不会包含它）。安装后用 `status` 确认通道就绪：
 
 ```powershell
-dsh plugin --profile web add "file:<绝对路径>/deepseek-harness-hashline"
+node bin/dsh-hashline.mjs status --profile web
+#  依赖:      link:.../deepseek-harness-hashline
+#  bundle 通道: 已就绪（重启自动挂载）   ← 此行应为“已就绪”
 ```
 
-持续开发使用 `link:` 直接安装（新版运行时从 profile 解析 DSH peer，无需本地 junction）：
+也可以手动使用底层命令并检查组合：
 
 ```powershell
 dsh plugin --profile web add "link:<绝对路径>/deepseek-harness-hashline"
-```
-
-安装后检查组合：
-
-```powershell
 dsh --profile web --dump-config
 ```
 
 ## 更新
 
-重新执行安装命令即可更新依赖和持久 bundle。浏览器端内容更新后刷新页面；使用本地 `link:` 开发时，
+重新执行安装命令即可更新依赖与持久 bundle。浏览器端内容更新后刷新页面；使用本地 `link:` 开发时，
 主机文件在 DSH HMR 服务可用时自动热重载；不可用时检查本插件的精确自监视路径并报告，不能以重启代替。
 
 ## 卸载
 
 ```powershell
-dsh plugin --profile web remove deepseek-harness-hashline
+node bin/dsh-hashline.mjs remove --profile web
+# 等价于：dsh plugin --profile web remove deepseek-harness-hashline
 ```
 
 卸载会清理持久 bundle 与运行中条目，不会删除 DSH 会话数据。`settings` 命名空间 `hashline` 中已有的
@@ -108,7 +115,7 @@ dsh plugin --profile web remove deepseek-harness-hashline
 **“替换内置读写”怎么用？** 开启后，允许编辑的智能体看到的是严格锚定的 `read` / `edit`，
 `hashline_read` / `hashline_edit` 被隐藏。每次修改先用 `read` 获取最新锚点；`edit.edits` 的每个数组项只能包含
 一个 `set_line`、`replace_lines` 或 `insert_after`，不接受 `old_string` / `new_string` 字面替换。关闭开关恢复原工具。
-替换只在智能体原本能看到四个相关工具时安装，避免绕过配置限制；系统提示也在该智能体作用域内同步替换，关闭后恢复。
+替换只在智能体原本能看到四个相关工具时安装，避免绕过配置限制；系统提示也在该智能体作用域内同步替换，关闭后恢复。**极简模式（minimal 预设）下不安装替换**：插件只在该智能体作用域隐藏全局 `hashline_read` / `hashline_edit`，保持“仅持久 shell + str_replace_editor”的双工具组合不被第三方能力突破；该隐藏**不依赖“替换原版工具”开关**，关闭替换后对极简 agent 同样生效。
 
 ## 开发文档
 

@@ -40,43 +40,55 @@
 
 ## Installation
 
-Replace `<absolute-path>` with the actual absolute path on your machine. The source checkout does not track the generated `lib/` directory. Install development dependencies once, then run `npm run build` before the first installation and after source changes:
+Use this plugin's unified installation CLI (same style as `deepseek-harness-zh_pro` and
+`deepseek-harness-zhipu_plan_tools`: `node bin/dsh-*.mjs install`). For a source checkout, install
+development dependencies once and build before the first installation or after source changes:
 
 ```powershell
 npm install
 npm run build
+
+node bin/dsh-hashline.mjs install --profile web --link $PWD
 ```
 
-Local file installation:
+`--link` must point at this plugin's source directory; it is equivalent to
+`dsh plugin --profile web add "link:<absolute-path>/deepseek-harness-hashline"`. DSH reads the package's
+`dsh.bundle` declaration and adds it to the profile's `dsh.profile.bundles`; it mounts automatically the
+next time `dsh web` starts (this plugin does not deploy hot rows, nor does it copy dsh-zh's hot-install
+supervisor).
+
+> ⚠️ When the `link:` target directory does not exist, DSH classifies the package as a plain dependency:
+> it neither fails nor mounts (it never joins `dsh.profile.bundles`). Confirm the channel with `status`:
 
 ```powershell
-dsh plugin --profile web add "file:<absolute-path>/deepseek-harness-hashline"
+node bin/dsh-hashline.mjs status --profile web
+#  依赖:      link:.../deepseek-harness-hashline
+#  bundle 通道: 已就绪（重启自动挂载）   ← should read "ready"
 ```
 
-For continuous development, install with `link:` directly — the runtime resolves DSH peers from the profile, so no local junction setup is required:
+The lower-level command also works, followed by a composition check:
 
 ```powershell
 dsh plugin --profile web add "link:<absolute-path>/deepseek-harness-hashline"
-```
-
-Check the composition after installation:
-
-```powershell
 dsh --profile web --dump-config
 ```
 
-
 ## Updates
 
-Run the installation command again to update the dependency and persistent bundle. Refresh the page after browser-side changes. During local `link:` development, Host files hot reload when the DSH HMR service is available; if unavailable, inspect this plugin's exact self-watch paths and report the failure instead of restarting DSH.
+Re-run the installation command to update the dependency and persistent bundle. Refresh the page
+after browser-side changes. During local `link:` development, Host files hot reload when the DSH HMR service is
+available; if unavailable, inspect this plugin's exact self-watch paths and report the failure instead of restarting
+DSH.
 
 ## Uninstallation
 
 ```powershell
-dsh plugin --profile web remove deepseek-harness-hashline
+node bin/dsh-hashline.mjs remove --profile web
+# equivalent to: dsh plugin --profile web remove deepseek-harness-hashline
 ```
 
-Uninstallation removes the persistent bundle and running entries. It does not delete DSH session data. Existing user overrides in the `hashline` settings namespace may remain and can be reused after a later installation.
+Uninstallation removes the persistent bundle and running entries. It does not delete DSH session data.
+Existing user overrides in the `hashline` settings namespace may remain and can be reused after a later installation.
 
 ## Settings and data
 
@@ -93,7 +105,7 @@ The exact card order, defaults, and ranges are maintained only in the [Usage gui
 
 **Can a short hash collide?** A short hash has a theoretical collision probability. The default 4 hexadecimal characters provide a 16-bit check and are combined with the line number and file-level version CAS. Increase `hashLength` for higher-risk deployments.
 
-**How does Replace built-in read/edit work?** When enabled, an allowed agent sees strict `read` and `edit` surfaces while `hashline_read` and `hashline_edit` are hidden. Call `read` before each change and use its fresh anchors. Every `edit.edits` array element must contain exactly one `set_line`, `replace_lines`, or `insert_after`; `old_string` / `new_string` literal replacement is rejected with guidance toward the built-in `edit`. Disabling the setting restores the original tools. Replacement is installed only when all four original capabilities are already visible, so it cannot bypass visibility restrictions. The same Agent scope also replaces the built-in prompt guidance and restores it when disabled.
+**How does Replace built-in read/edit work?** When enabled, an allowed agent sees strict `read` and `edit` surfaces while `hashline_read` and `hashline_edit` are hidden. Call `read` before each change and use its fresh anchors. Every `edit.edits` array element must contain exactly one `set_line`, `replace_lines`, or `insert_after`; `old_string` / `new_string` literal replacement is rejected with guidance toward the built-in `edit`. Disabling the setting restores the original tools. Replacement is installed only when all four original capabilities are already visible, so it cannot bypass visibility restrictions. The same Agent scope also replaces the built-in prompt guidance and restores it when disabled. **Under the minimal preset, no replacement is installed**: the plugin only hides the global `hashline_read` / `hashline_edit` in that agent's scope, keeping the "persistent shell + str_replace_editor" two-tool composition free of third-party capabilities. This hiding does **not** depend on the "Replace built-in read/edit" switch: it applies to minimal agents whenever the plugin is enabled.
 
 ## Development documentation
 

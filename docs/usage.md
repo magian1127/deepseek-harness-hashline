@@ -139,7 +139,7 @@ bundle 默认配置位于 `cordis.patch.yml`：
 | 字段 | 默认值 | 说明 |
 | --- | ---: | --- |
 | `enabled` | true | 全局启停两个 Hashline 工具及提示词；设置卡片保持可用 |
-| `replaceBuiltinEdit` | false | 在允许编辑的智能体作用域替换内置 `read` / `edit`；替换后的 `edit` 强制使用最新 `LINE:HASH`，不公开文本替换或 `replace` |
+| `replaceBuiltinEdit` | false | 在允许编辑的智能体作用域替换内置 `read` / `edit`；替换后的 `edit` 强制使用最新 `LINE:HASH`，不公开文本替换或 `replace`。**极简模式（minimal 预设）下不替换**：仅在 Agent 作用域隐藏全局 `hashline_read` / `hashline_edit` |
 | `promptGuidance` | true | 是否注册简短工具选用提示；替换内置读写开启时，提示以同名 section 阴影在 Agent 作用域替换内置 `read` / `edit` 原提示 |
 | `zhPrompt` | false | 提示词中文化：注入的提示词与工具说明改为中文，工具名保持英文 |
 | `hashLength` | 4 | 3–16 位十六进制哈希；改变后旧锚点全部失效 |

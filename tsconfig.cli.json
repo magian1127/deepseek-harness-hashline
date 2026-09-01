@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src/bin",
+    "outDir": "bin"
+  },
+  "include": ["src/bin/**/*.mts"]
+}

@@ -26,6 +26,8 @@ stale read，并把多处修改作为一个原子请求处理。它不判断代�
 - 全局 `hashline_read` 的说明始终配对全局 `hashline_edit`；只有替换整组安装成功的 Agent scoped `read` 才配对严格 `edit`。
   因可见性限制而跳过替换时，不得让全局读取说明把模型导向内置文本 `edit`；
 - 替换前确认该智能体的 `read`、`edit`、`hashline_read`、`hashline_edit` 均可见，避免绕过配置限制；同层重名时保留已有定义并回滚整组替换；
+- **极简模式（minimal 预设）不替换**：经 `agentPresets.composedPreset(agent.ctx) === 'minimal'` 判定后，仅在该智能体作用域以 `restrict` deny 全局 `hashline_read` / `hashline_edit`，不注册 own-scope `read` / `edit` 与提示词阴影，维持该预设的双工具组合；该 deny **与 `replaceBuiltinEdit` 开关无关**，只要插件 `enabled` 即对极简 agent 生效（曾因 deny 被放在替换分支内，关闭替换后极简 agent 重新看到全局 hashline 工具——回归测试已锁定）；
+- 会话**中途切换预设**(如 cordis → minimal,DSH `recompose`)时,监听官方 `agent-preset/selected` 对目标 Agent 重新评估:撤销已装的替换、改挂 deny,避免残留注入;不得再监听 `tools/change` 兜底——工具注册/注销会同步触发它,重装表面又触发它,形成无限递归卡死会话创建;
 - 不修改或卸载 `tool-fs`；
 - V1 不做 symbol、AST、fuzzy matching、grep 锚点或上下文卫生跟踪；
 - 新建文件和全量重写不属于本插件。
@@ -154,11 +156,13 @@ React、ToolResult 或 DSH 运行时实例。
 
 实现源码全部位于 `src/`，采用纯 TypeScript 构建：`tsc` 将 Host/core 生成纯 ESM JavaScript
 与声明文件，`tsdown` 将 `src/client.ts` 生成按 DSH client module 约定交付的经典
-`__ModuleLoader__` bundle。发布包消费 `lib/` 产物，不要求安装时再转译。运行时 peer
+`__ModuleLoader__` bundle；`src/bin/dsh-hashline.mts` 经 `tsc -p tsconfig.cli.json` 编译为
+`bin/dsh-hashline.mjs`（`install` / `remove` / `status` CLI）。发布包消费 `lib/` 产物，不要求安装时再转译。运行时 peer
 `@deepseek-ai/dsh-llm` 和 `@deepseek-ai/schemastery` 由 `src/profile-modules.ts` 从当前 profile 解析加载，`file:` 与
 `link:` 安装同路径，不再需要 junction。标准安装命令把 `cordis.patch.yml` 作为 profile
-bundle 层加入，并从 package manifest 发现 client bundle；不提供自定义热安装 CLI，避免复制与核心编辑
-能力无关的 profile 监督逻辑。
+bundle 层加入，并从 package manifest 发现 client bundle。CLI 是 `dsh plugin` 的轻量封装：只走持久
+bundle 通道（校验 `dsh.profile.bundles` 真正就绪），不部署热行，也不复制与核心编辑能力无关的 profile
+热安装监督逻辑（AGENTS.md 约束 9）；安装后需重启一次 `dsh web` 生效。
 
 ## 后续候选
 

@@ -12,7 +12,7 @@
 6. 相对路径与 sandbox policy 必须使用调用会话，不得退回插件进程 cwd。
 7. 共享的 Fiber、副作用、scope、schema、Client/Host HMR、Git 与用户改动保护规则见 [`../docs/`](../docs/README.md)。
 8. 客户端只向 `settings.plugin.item` 贡献配置卡片并使用官方 `settingsScope`；不得添加自定义网络请求、遥测或独立持久数据。
-9. 不复制 `dsh-zh` 的热安装监督器；安装统一使用 `dsh plugin`。
+9. 不复制 `dsh-zh` 的热安装监督器，不部署热行；安装使用本插件的 `node bin/dsh-hashline.mjs install --profile web --link <目录>` CLI（内部封装 `dsh plugin add`，只走持久 bundle 通道，安装后需重启一次 `dsh web` 生效），或直接使用 `dsh plugin`。
 
 ## 修改与验证
 
