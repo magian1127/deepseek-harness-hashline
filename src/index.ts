@@ -555,6 +555,7 @@ interface EditResultValue {
   removedLines: number
   addedLines: number
   firstChangedLine: number | null
+  totalLines: number
   eol: string
   bom: boolean
   preview: LineRecord[]
@@ -562,12 +563,16 @@ interface EditResultValue {
   presentation?: { diffs: FileDiff[] }
 }
 
-function renderEdit(value: EditResultValue, toolName = 'hashline_edit'): unknown[] {
+function renderEdit(value: EditResultValue, toolName = 'hashline_edit', readToolName = 'hashline_read'): unknown[] {
   const summary = value.changed
     ? `${toolName}: applied ${value.editsApplied} edit(s) to ${value.path}; lines removed=${value.removedLines}, lines added=${value.addedLines}`
     : `${toolName}: no change was needed for ${value.path}`
   if (value.preview.length === 0) return [{ type: 'text', text: summary }]
-  return [{ type: 'text', text: `${summary}\nUpdated anchors:\n${value.preview.map(formatLine).join('\n')}` }]
+  // 预览是首个变更点周围的上下文窗口而非全量锚点清单；文案里明说窗口范围与
+  // 总行数，避免模型误读为“缺行”而多跑一轮 read 验证（2026-09-01 PTC 实测）。
+  const first = value.preview[0].number
+  const last = value.preview[value.preview.length - 1].number
+  return [{ type: 'text', text: `${summary}\nContext around first change (lines ${first}-${last} of ${value.totalLines}; run ${readToolName} again for the full file):\n${value.preview.map(formatLine).join('\n')}` }]
 }
 
 // 工具参数根节点必须保持 type: object；数组项可以使用 DSH 已支持的嵌套 oneOf。
@@ -664,8 +669,9 @@ const EDIT_OUTPUT_SCHEMA: JsonSchema = {
     'editsApplied',
     'removedLines',
     'addedLines',
-    'firstChangedLine',
-    'eol',
+      'firstChangedLine',
+      'totalLines',
+      'eol',
     'bom',
     'preview',
   ],
@@ -676,6 +682,7 @@ const EDIT_OUTPUT_SCHEMA: JsonSchema = {
     removedLines: { type: 'integer' },
     addedLines: { type: 'integer' },
     firstChangedLine: { oneOf: [{ type: 'integer' }, { type: 'null' }] },
+      totalLines: { type: 'integer' },
     eol: { type: 'string', enum: ['crlf', 'lf', 'mixed', 'unknown'] },
     bom: { type: 'boolean' },
     preview: { type: 'array', items: LINE_OUTPUT_SCHEMA },
@@ -788,6 +795,7 @@ function resultFromContent(
     removedLines: plan.changed ? plan.removedLines : 0,
     addedLines: plan.changed ? plan.addedLines : 0,
     firstChangedLine: plan.changed ? plan.firstChangedLine : null,
+      totalLines: file.lines.length,
     eol: file.eol,
     bom: file.bom,
     preview: previewContent(content, plan.firstChangedLine, options),
@@ -938,7 +946,7 @@ function createEditTool(
     parameters: editParameters(sandbox, options.zhPrompt, readToolName),
     output: {
       schema: EDIT_OUTPUT_SCHEMA,
-      render: (_args: unknown, value: Record<string, unknown>) => renderEdit(value as unknown as EditResultValue, toolName),
+        render: (_args: unknown, value: Record<string, unknown>) => renderEdit(value as unknown as EditResultValue, toolName, readToolName),
       // 始终返回 lossless JSON：无变化时用空 diffs，让 presentResult 回退 generic；
       // 不能返回 undefined，否则真实 DSH ToolRuntime 会把成功结果转成 INVALID_TOOL_OUTPUT。
       presentationMeta: (_args: unknown, value: Record<string, unknown>) => {

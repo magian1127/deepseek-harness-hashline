@@ -1243,7 +1243,7 @@ test('hashline_edit presentResult 对错误与畸形 meta 回退 undefined', asy
   }), undefined)
 })
 
-test('hashline_edit 模型文本保留确认与更新锚点', async () => {
+test('hashline_edit 模型文本保留确认与变更窗口上下文', async () => {
   const harness = createHarness({ content: 'alpha\nbeta\n' })
   apply(harness.ctx)
   const tool = harness.tools.get('hashline_edit')
@@ -1255,7 +1255,7 @@ test('hashline_edit 模型文本保留确认与更新锚点', async () => {
   const [block] = tool.output.render({ file_path: 'sample.txt' }, result)
   assert.equal(block.type, 'text')
   assert.match(block.text, /applied 1 edit\(s\) to/)
-  assert.match(block.text, /Updated anchors:/)
+    assert.match(block.text, /Context around first change \(lines 1-2 of 2; run hashline_read again for the full file\):/)
 })
 
 test('CRLF 文件编辑的展示 diff 已归一为 LF 且写入保真不变', async () => {
