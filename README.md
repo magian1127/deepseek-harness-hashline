@@ -114,7 +114,7 @@ node bin/dsh-hashline.mjs remove --profile web
 
 **“替换内置读写”怎么用？** 开启后，允许编辑的智能体看到的是严格锚定的 `read` / `edit`，
 `hashline_read` / `hashline_edit` 被隐藏。每次修改先用 `read` 获取最新锚点；`edit.edits` 的每个数组项只能包含
-一个 `set_line`、`replace_lines` 或 `insert_after`，不接受 `old_string` / `new_string` 字面替换。关闭开关恢复原工具。
+  一个 `set_line`、`replace_lines` 或 `insert_after`。关闭开关恢复原工具。
 替换只在智能体原本能看到四个相关工具时安装，避免绕过配置限制；系统提示也在该智能体作用域内同步替换，关闭后恢复。**极简模式（minimal 预设）下不安装替换**：插件只在该智能体作用域隐藏全局 `hashline_read` / `hashline_edit`，保持“仅持久 shell + str_replace_editor”的双工具组合不被第三方能力突破；该隐藏**不依赖“替换原版工具”开关**，关闭替换后对极简 agent 同样生效。
 
 ## 开发文档

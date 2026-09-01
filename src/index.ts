@@ -930,9 +930,11 @@ function createEditTool(
 ): ToolDefinition {
   return {
     name: toolName,
-    description: options.zhPrompt
-      ? `用 ${readToolName} 最新输出中的 LINE:HASH 锚点编辑现有 UTF-8 文本文件。edits 必须非空，每个数组项只包含 set_line、replace_lines 或 insert_after 中的一个操作。此入口不接受 old_string/new_string 字面替换；简单字面替换请用内置 edit。所有锚点在写入前针对同一稳定快照统一校验。`
-      : `Edit an existing UTF-8 text file with fresh LINE:HASH anchors from ${readToolName}. edits is required and non-empty; every array element must contain exactly one set_line, replace_lines, or insert_after operation. This surface does not accept old_string/new_string literal replacement; use the built-in edit for that. All anchors are verified against one stable snapshot before writing.`,
+      // 替换形态（toolName=edit）下内置 edit 已被替换，不再出现否定句或
+      // “简单字面替换请用内置 edit”指引；全局形态保留该指引（两者并存）。
+      description: options.zhPrompt
+        ? `用 ${readToolName} 最新输出中的 LINE:HASH 锚点编辑现有 UTF-8 文本文件。edits 必须非空，每个数组项只包含 set_line、replace_lines 或 insert_after 中的一个操作。${toolName === 'edit' ? '' : '简单字面替换请用内置 edit。'}所有锚点在写入前针对同一稳定快照统一校验。`
+        : `Edit an existing UTF-8 text file with fresh LINE:HASH anchors from ${readToolName}. edits is required and non-empty; every array element must contain exactly one set_line, replace_lines, or insert_after operation.${toolName === 'edit' ? '' : ' Use the built-in edit for a simple unique literal replacement.'} All anchors are verified against one stable snapshot before writing.`,
     parameters: editParameters(sandbox, options.zhPrompt, readToolName),
     output: {
       schema: EDIT_OUTPUT_SCHEMA,
@@ -1068,13 +1070,13 @@ function editGuidanceText(options: ResolvedConfig): string {
     return (
       `使用 ${editToolName} 工具对现有 UTF-8 文本文件做严格的哈希锚定修改。` +
       `先用 ${readToolName} 读取，再从最新输出精确复制 LINE:HASH。edits 数组的每一项只放一个 set_line、replace_lines 或 insert_after 操作；多处修改拆成多个数组项。` +
-      '此入口不接受 old_string/new_string 字面替换。哈希不匹配意味着未写入；使用错误中的新锚点或重新读取。新建文件用 write。'
+      '哈希不匹配意味着未写入；使用错误中的新锚点或重新读取。新建文件用 write。'
     )
   }
   return (
     `Use the ${editToolName} tool for strictly hash-anchored changes to existing UTF-8 text files. ` +
     `Call ${readToolName} first and copy fresh LINE:HASH anchors exactly. Put exactly one set_line, replace_lines, or insert_after operation in each edits array element; use separate elements for separate changes. ` +
-    'This surface does not accept old_string/new_string literal replacement. A hash mismatch means nothing was written; use the updated anchor in the error or read again. Use write for new files.'
+    'A hash mismatch means nothing was written; use the updated anchor in the error or read again. Use write for new files.'
   )
 }
 

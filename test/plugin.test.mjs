@@ -463,8 +463,10 @@ test('replaceBuiltinEdit 对现有 Agent 可逆遮蔽内置 read/edit', async ()
   assert.match(harness.agent.__scopedPrompt.get('tool:read').text, /LINE:HASH anchors/)
   assert.ok(!/strictly hash-anchored/.test(harness.agent.__scopedPrompt.get('tool:read').text))
   assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /strictly hash-anchored/)
-  assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /exactly one set_line, replace_lines, or insert_after/)
-  assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /does not accept old_string\/new_string literal replacement/)
+    assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /exactly one set_line, replace_lines, or insert_after/)
+    // 否定句已按需求移除：替换形态不再提 old_string/new_string（上文已写明用法）。
+    assert.ok(!/old_string\/new_string/.test(harness.agent.__scopedPrompt.get('tool:edit').text))
+    assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /Use write for new files/)
   assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /Use write for new files/)
 
   const read = await readTool.execute({ file_path: 'sample.txt' }, harness.exec)
