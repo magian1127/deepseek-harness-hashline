@@ -674,14 +674,23 @@ function firstLineOf(text: string): string {
  * 对齐原生 ToolRow 的错误态展开 body：ioCard（OUT 标签 + 红字完整错误）+ Inspect。
  * 原生 .ioCard / .ioSection / .ioLabel / .ioText[data-error] 的结构与配色在此复刻。
  */
-function errorIoCard(errorText: string, inspect: (() => void) | undefined): any {
+/**
+ * 对齐原生 ToolRow 的展开 body：ioCard（OUT 标签 + 文本）+ Inspect。成功回退
+ * 不带 data-error；错误态传 error: true 复刻原生红字。原生 .ioCard / .ioSection /
+ * .ioLabel / .ioText[data-error] 的结构与配色在此复刻。
+ */
+function outIoCard(text: string, options: { error?: boolean; inspect?: (() => void) | undefined }): any {
   const h = React.createElement
   return h(React.Fragment, null,
     h('div', { style: uiStyles.ioCard },
       h('div', { style: uiStyles.ioSection },
         h('span', { style: uiStyles.ioLabel }, 'OUT'),
-        h('span', { style: uiStyles.ioText, 'data-error': true }, errorText))),
-    inspect === undefined ? null : h('button', { type: 'button', style: uiStyles.toolInspect, onClick: inspect }, 'Inspect'))
+        h('span', Object.assign({ style: uiStyles.ioText }, options.error ? { 'data-error': true } : {}), text))),
+    options.inspect === undefined ? null : h('button', { type: 'button', style: uiStyles.toolInspect, onClick: options.inspect }, 'Inspect'))
+}
+
+function errorIoCard(errorText: string, inspect: (() => void) | undefined): any {
+  return outIoCard(errorText, { error: true, inspect })
 }
 
 /**
@@ -788,8 +797,12 @@ function HashlineDiffBlock({ diffs, maxLines = 8 }: { diffs: HashlineDiffHunk[];
       const error = props.block?.kind === 'tool-result' && props.block.isError === true
       // 失败时 content 里带 `Error: ...` 文本；用于展开详情和折叠摘要，与原生
       // FileMutationRow 的 output / errorSummary 保持一致（错误不可展开即此 bug）。
-      const errorText = error ? hashlineResultText(props.block) : ''
-      const expandable = diffs !== undefined || errorText !== ''
+        const errorText = error ? hashlineResultText(props.block) : ''
+        // PTC（run_code 程序模式）子调用的投影没有 block.meta（tool/code-dispatch
+        // 事件不携带 meta）；成功结果回退为 OUT 文本展开，与 shipped 工具行的
+        // 子调用展开一致。hashlineResultText 对非结算块返回 ''，running 行保持不可展开。
+        const outputText = errorText === '' && diffs === undefined ? hashlineResultText(props.block) : ''
+        const expandable = diffs !== undefined || errorText !== '' || outputText !== ''
       const isOpen = open && expandable
       const openPath = function (event: any) {
         event.stopPropagation()
@@ -808,11 +821,11 @@ function HashlineDiffBlock({ diffs, maxLines = 8 }: { diffs: HashlineDiffHunk[];
           type: 'button', style: uiStyles.toolLink, onClick: openPath,
           onKeyDown: function (event: any) { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
         }, path))
-      const body = !isOpen ? null : errorText !== '' ? errorIoCard(errorText, props.inspect) : diffs === undefined ? null : h(React.Fragment, null,
-        h(HashlineDiffBlock, { diffs, maxLines: 8 }),
-        props.inspect === undefined ? null : h('button', {
-          type: 'button', style: uiStyles.toolInspect, onClick: props.inspect,
-        }, 'Inspect'))
+        const body = !isOpen ? null : errorText !== '' ? errorIoCard(errorText, props.inspect) : diffs !== undefined ? h(React.Fragment, null,
+          h(HashlineDiffBlock, { diffs, maxLines: 8 }),
+          props.inspect === undefined ? null : h('button', {
+            type: 'button', style: uiStyles.toolInspect, onClick: props.inspect,
+          }, 'Inspect')) : outputText !== '' ? outIoCard(outputText, { inspect: props.inspect }) : null
       const status = rowStatusText(state)
       return h('div', { 'data-variant': 'edit', 'data-tool': props.toolName, 'data-state': state, style: uiStyles.toolRow },
         status === null ? null : h('span', { style: uiStyles.visuallyHidden }, status),
@@ -823,7 +836,7 @@ function HashlineDiffBlock({ diffs, maxLines = 8 }: { diffs: HashlineDiffHunk[];
           expandable,
           onToggle: function () { setOpen(!open) },
           expandOnRowClick: true,
-          previewChevron: true,
+            previewChevron: expandable,
           keepContentWhenOpen: true,
           collapsedContent,
         }, body))
@@ -856,8 +869,10 @@ function filePathFromBlock(block: any): string | undefined {
       const path = filePathFromBlock(props.block) ?? view?.path ?? props.callId ?? ''
       const running = props.block?.kind !== 'tool-result'
       const error = props.block?.kind === 'tool-result' && props.block.isError === true
-      const errorText = error ? hashlineResultText(props.block) : ''
-      const expandable = view !== undefined || errorText !== ''
+        const errorText = error ? hashlineResultText(props.block) : ''
+        // 同 HashlineEditRow：PTC 子调用无 block.meta 时，成功结果回退 OUT 文本展开。
+        const outputText = errorText === '' && view === undefined ? hashlineResultText(props.block) : ''
+        const expandable = view !== undefined || errorText !== '' || outputText !== ''
       const isOpen = open && expandable
       const openPath = function (event: any) {
         event.stopPropagation()
@@ -892,20 +907,20 @@ function filePathFromBlock(block: any): string | undefined {
           type: 'button', style: uiStyles.toolLink, onClick: openPath,
           onKeyDown: function (event: any) { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
         }, path))
-      const body = !isOpen ? null : errorText !== '' ? errorIoCard(errorText, props.inspect) : view === undefined ? null : h(React.Fragment, null,
-        // ReadBlock 只接受 className 定位；外边距由插件自己的包裹元素承担。
-        h('div', { style: uiStyles.readBody },
-          h(ReadBlock, {
-            label: view.path,
-            labels: readLabels,
-            lines,
-            totalLines: view.totalLines,
-            lang: view.lang,
-            maxLines: 8,
-          })),
-        props.inspect === undefined ? null : h('button', {
-          type: 'button', style: uiStyles.toolInspect, onClick: props.inspect,
-        }, 'Inspect'))
+        const body = !isOpen ? null : errorText !== '' ? errorIoCard(errorText, props.inspect) : view !== undefined ? h(React.Fragment, null,
+          // ReadBlock 只接受 className 定位；外边距由插件自己的包裹元素承担。
+          h('div', { style: uiStyles.readBody },
+            h(ReadBlock, {
+              label: view.path,
+              labels: readLabels,
+              lines,
+              totalLines: view.totalLines,
+              lang: view.lang,
+              maxLines: 8,
+            })),
+          props.inspect === undefined ? null : h('button', {
+            type: 'button', style: uiStyles.toolInspect, onClick: props.inspect,
+          }, 'Inspect')) : outputText !== '' ? outIoCard(outputText, { inspect: props.inspect }) : null
       const status = rowStatusText(state)
       return h('div', { 'data-variant': 'read', 'data-tool': props.toolName, 'data-state': state, style: uiStyles.toolRow },
         status === null ? null : h('span', { style: uiStyles.visuallyHidden }, status),
@@ -916,7 +931,7 @@ function filePathFromBlock(block: any): string | undefined {
           expandable,
           onToggle: function () { setOpen(!open) },
           expandOnRowClick: true,
-          previewChevron: true,
+            previewChevron: expandable,
           keepContentWhenOpen: true,
           collapsedContent,
         }, body))

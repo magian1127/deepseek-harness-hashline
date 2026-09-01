@@ -543,6 +543,133 @@ test('Hashline 编辑 toolview 对失败结果可展开并展示错误文本', a
   assert.ok(expandedNodes.some(node => node?.type === 'span' && node.props['data-error'] === true && node.props.children === message))
   assert.ok(expandedNodes.some(node => node?.type === 'span' && node.props.children === 'OUT'))
 })
+test('PTC 子调用的读取行（无 meta）可展开并以 OUT 文本回退', async () => {
+  const reactHarness = createReactHarness()
+  const { exports } = await loadClientModule(reactHarness.React)
+  const registrations = []
+  const ctx = {
+    locale: { bind: () => key => key, register: () => () => {} },
+    settingsScope: { bind: () => ({
+      getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, revision: 0, writable: false, mode: 'host' }),
+      subscribe: () => () => {}, set: async () => {}, unset: async () => {},
+    }) },
+    slots: {
+      inject: (_name, factory) => {
+        const effect = factory()
+        if (effect !== null && typeof effect === 'object' && Symbol.iterator in effect) {
+          const disposers = [...effect]
+          return () => { for (const dispose of disposers.reverse()) dispose?.() }
+        }
+        return effect
+      },
+      register(options, Component) { registrations.push({ options, Component }); return () => {} },
+    },
+    effect: setup => setup(),
+  }
+  exports.apply(ctx)
+  const ReadRow = registrations.find(item => item.options.key === 'hashline_read').Component
+  const envelope = '<path>demo.ts</path>\n<type>file</type>\n<content>\n1|b6a9  const alpha = 1\n\n(End of file - total 1 lines)\n</content>'
+  // PTC（run_code 程序模式）子调用投影：tool/code-dispatch 事件不携带 meta，
+  // 成功结果的 content 只有 envelope 文本。
+  const block = {
+    kind: 'tool-result', callId: 'call-1:code:1', isError: false,
+    parentCallId: 'call-1',
+    call: { name: 'read', argsRaw: JSON.stringify({ file_path: 'demo.ts' }) },
+    content: [{ type: 'text', text: envelope }],
+  }
+  const props = { callId: 'call-1:code:1', toolName: 'read', block, openFile: () => {} }
+  const collapsed = reactHarness.render(() => ReadRow(props))
+  const collapsedNodes = flatten(collapsed)
+  // 修复前：无 meta 且非错误 → expandable=false，行不可展开（aria-expanded 不存在）。
+  const header = collapsedNodes.find(node => node?.props?.['aria-expanded'] === false)
+  assert.ok(header, '无 meta 的成功子调用应当可展开（aria-expanded 存在）')
+  header.props.onClick()
+  const expanded = reactHarness.render(() => ReadRow(props))
+  const expandedNodes = flatten(expanded)
+  // 展开体回退为 OUT 文本（不带错误标记）。
+  assert.ok(expandedNodes.some(node => node?.type === 'span' && node.props.children === 'OUT'))
+  assert.ok(expandedNodes.some(node => node?.type === 'span' && node.props.children === envelope))
+  assert.ok(!expandedNodes.some(node => node?.props?.['data-error'] === true))
+})
+test('PTC 子调用的编辑行（无 meta）可展开并以 OUT 文本回退', async () => {
+  const reactHarness = createReactHarness()
+  const { exports } = await loadClientModule(reactHarness.React)
+  const registrations = []
+  const ctx = {
+    locale: { bind: () => key => key, register: () => () => {} },
+    settingsScope: { bind: () => ({
+      getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, revision: 0, writable: false, mode: 'host' }),
+      subscribe: () => () => {}, set: async () => {}, unset: async () => {},
+    }) },
+    slots: {
+      inject: (_name, factory) => {
+        const effect = factory()
+        if (effect !== null && typeof effect === 'object' && Symbol.iterator in effect) {
+          const disposers = [...effect]
+          return () => { for (const dispose of disposers.reverse()) dispose?.() }
+        }
+        return effect
+      },
+      register(options, Component) { registrations.push({ options, Component }); return () => {} },
+    },
+    effect: setup => setup(),
+  }
+  exports.apply(ctx)
+  const EditRow = registrations.find(item => item.options.key === 'hashline_edit').Component
+  const summary = 'edit: applied 1 edit(s) to demo.ts; lines removed=1, lines added=1\nUpdated anchors:\n2|c31d|const beta = 3'
+  const block = {
+    kind: 'tool-result', callId: 'edit-1:code:2', isError: false,
+    parentCallId: 'edit-1',
+    call: { name: 'edit', argsRaw: JSON.stringify({ file_path: 'demo.ts' }) },
+    content: [{ type: 'text', text: summary }],
+  }
+  const props = { callId: 'edit-1:code:2', toolName: 'edit', block, openFile: () => {} }
+  const collapsed = reactHarness.render(() => EditRow(props))
+  const collapsedNodes = flatten(collapsed)
+  const header = collapsedNodes.find(node => node?.props?.['aria-expanded'] === false)
+  assert.ok(header, '无 meta 的成功子调用编辑行应当可展开')
+  header.props.onClick()
+  const expanded = reactHarness.render(() => EditRow(props))
+  const expandedNodes = flatten(expanded)
+  assert.ok(expandedNodes.some(node => node?.type === 'span' && node.props.children === 'OUT'))
+  assert.ok(expandedNodes.some(node => node?.type === 'span' && node.props.children === summary))
+})
+test('运行中的读取/编辑子调用不显示展开箭头（对齐原生 previewChevron 语义）', async () => {
+  const reactHarness = createReactHarness()
+  const { exports } = await loadClientModule(reactHarness.React)
+  const registrations = []
+  const ctx = {
+    locale: { bind: () => key => key, register: () => () => {} },
+    settingsScope: { bind: () => ({
+      getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, revision: 0, writable: false, mode: 'host' }),
+      subscribe: () => () => {}, set: async () => {}, unset: async () => {},
+    }) },
+    slots: {
+      inject: (_name, factory) => {
+        const effect = factory()
+        if (effect !== null && typeof effect === 'object' && Symbol.iterator in effect) {
+          const disposers = [...effect]
+          return () => { for (const dispose of disposers.reverse()) dispose?.() }
+        }
+        return effect
+      },
+      register(options, Component) { registrations.push({ options, Component }); return () => {} },
+    },
+    effect: setup => setup(),
+  }
+  exports.apply(ctx)
+  const ReadRow = registrations.find(item => item.options.key === 'hashline_read').Component
+  const running = {
+    callId: 'call-1:code:1', parentCallId: 'call-1', name: 'read',
+    argsRaw: JSON.stringify({ file_path: 'demo.ts' }), subCalls: [],
+  }
+  const collapsed = reactHarness.render(() => ReadRow({
+    callId: 'call-1:code:1', toolName: 'read', block: running, openFile: () => {},
+  }))
+  const nodes = flatten(collapsed)
+  // 修复前 previewChevron 恒为 true：无展开能力的行也显示 hover 箭头（死箭头）。
+  assert.ok(!nodes.some(node => node?.props?.['aria-expanded'] !== undefined))
+})
 test('客户端配置卡片包含全局、替换、提示词、中文化和四个数值字段', async () => {
   const reactHarness = createReactHarness()
   const { exports } = await loadClientModule(reactHarness.React)

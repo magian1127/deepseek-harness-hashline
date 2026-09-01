@@ -150,6 +150,7 @@ React、ToolResult 或 DSH 运行时实例。
 - 注册 `read` / `edit` 键会阴影 shipped toolview，但仅在 `enabled && replaceBuiltinEdit` 时动态注册；DSH keyed Slot 的最低 live priority 胜出，因此 Hashline 使用 `priority: -100` 覆盖 shipped 的默认 `0`，而不是在同一 priority 制造注册冲突。默认只拥有 `hashline_read` / `hashline_edit`，两种命名各自复用同一 Hashline 行组件；注销阴影贡献后 shipped toolview 自动恢复。
 - 失败结果的呈现对齐原生 `FileMutationRow`：`read` / `edit` toolview 在 `isError` 时把结果 content 里的 `Error: ...` 文本拉平（`hashlineResultText`，与原生 `toolRowModel.resultText` 同义），折叠摘要显示首行、展开显示完整错误文本，并保持可展开（修复前错误结果因无 diff 而被判为不可展开，会话列表中看不到错误、点缩放无效果）。
 - 失败行的结构逐项对齐原生 `ToolRow`：折叠摘要 = 分隔点 + 错误首行（`--dsw-alias-state-error-primary` 红字，错误时不显示文件路径链接）；展开 body 是 `ioCard`（`OUT` 标签 + `ioText[data-error]` 红字完整错误），而不是裸 `<pre>`；`DisclosureRow` 必须传 `keepContentWhenOpen` 让展开态标题行仍保留摘要；根节点带 `data-variant`，并输出 screen-reader 状态文本（英文 `Failed`/`Running`）。
+- PTC（`run_code` 程序模式）子调用的展开回退：客户端投影里子调用块（`tool/code-dispatch` 落定）不携带 `block.meta`（meta 只随顶层 `tool/result` 持久化），因此读取/编辑 toolview 在“已结算、无错误、无 meta 投影”时，把结果 content 文本拉平为 `OUT` ioCard 展开（与 shipped 工具行对子调用的展开一致），而不是仅凭 meta/错误判为不可展开；`previewChevron` 跟随 `expandable`，不可展开的行（如运行中）不再显示悬停箭头，避免“有箭头点不开”的死箭头（2026-09-01 实测 PTC 下 hashline read/edit 子调用全部点不开后修复）。
 - 工具显示名靠 dsh-zh 的 DOM 文本层“整段精确匹配”改写（`CHAT_LABELS`：`Edit`→编辑、`Read`→读取、`Inspect`→检查、`Failed`→失败等），不是走 DSH locale。因此自写 toolview 里所有用户可见的英文字面量（title、Inspect、ioLabel `OUT`、diff 的复制/展开/footer 文案）必须与原生组件逐字节一致，否则翻译失效或与英文界面不一致；diff 的“复制/收起/footer”原生 `DiffBlock` 本身就是硬编码中文，照抄即可。
 
 ## 包形态
