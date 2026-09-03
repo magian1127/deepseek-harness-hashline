@@ -523,6 +523,7 @@ async function loadStableFile(
   exec: ToolExec,
   filePath: string,
   workspaceRoot?: string,
+  loadOptions?: { allowLargeFile?: boolean },
 ): Promise<StableFile> {
   const target = await ctx.fs.resolve(filePath, resolveOptions(exec, workspaceRoot))
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -534,20 +535,20 @@ async function loadStableFile(
     if (before.type !== 'file') {
       throw hashlineError('HASHLINE_NOT_A_FILE', `not a regular file: ${target.displayPath}`)
     }
-      if (before.size !== undefined && before.size > MAX_FILE_BYTES) {
+      if (!loadOptions?.allowLargeFile && before.size !== undefined && before.size > MAX_FILE_BYTES) {
         throw hashlineError(
           'HASHLINE_FILE_TOO_LARGE',
-          `file is too large for hashline (${before.size} bytes; limit ${MAX_FILE_BYTES}); use the built-in read tool or split the file`,
+          `file is too large for hashline (${before.size} bytes; limit ${MAX_FILE_BYTES}); re-read with offset and limit to fetch a bounded window`,
           { size: before.size, maxBytes: MAX_FILE_BYTES },
         )
       }
 
       const content = await ctx.fs.readText(target, exec.signal)
       const contentBytes = Buffer.byteLength(content, 'utf8')
-      if (contentBytes > MAX_FILE_BYTES) {
+      if (!loadOptions?.allowLargeFile && contentBytes > MAX_FILE_BYTES) {
         throw hashlineError(
           'HASHLINE_FILE_TOO_LARGE',
-          `file is too large for hashline (${contentBytes} bytes; limit ${MAX_FILE_BYTES}); use the built-in read tool or split the file`,
+          `file is too large for hashline (${contentBytes} bytes; limit ${MAX_FILE_BYTES}); re-read with offset and limit to fetch a bounded window`,
           { size: contentBytes, maxBytes: MAX_FILE_BYTES },
         )
       }
@@ -806,11 +807,13 @@ function pickField(
   layers: Array<Record<string, unknown> | undefined>,
   field: string,
   label: string,
+  keepEmpty = false,
 ): string | undefined {
   const values: string[] = []
   for (const layer of layers) {
     const raw = layer?.[field]
-    if (raw === undefined || isEmptySentinel(raw)) continue
+    // new_text 的空串是 core 层支持的删除语义（keepEmpty）；其余字段的空串仍是适配器哨兵。
+    if (raw === undefined || (!keepEmpty && isEmptySentinel(raw))) continue
     values.push(requireString(raw, label))
   }
   const unique = [...new Set(values)]
@@ -830,10 +833,11 @@ function pickFieldWithOrigin(
   rootPool: Record<string, unknown>,
   field: string,
   label: string,
+  keepEmpty = false,
 ): { value: string | undefined; hoisted: boolean } {
-  const all = pickField([variant, source, rootPool], field, label)
+  const all = pickField([variant, source, rootPool], field, label, keepEmpty)
   if (all === undefined) return { value: undefined, hoisted: false }
-  const upper = pickField([variant, source], field, label)
+  const upper = pickField([variant, source], field, label, keepEmpty)
   return { value: all, hoisted: upper === undefined }
 }
 
@@ -1001,7 +1005,7 @@ function recoverEditFromCandidate(
   if (kind === 'replace_lines') {
     const startAnchor = pickFieldWithOrigin(variant, source, rootPool, 'start_anchor', fieldLabel)
     const endAnchor = pickFieldWithOrigin(variant, source, rootPool, 'end_anchor', fieldLabel)
-    const newText = pickFieldWithOrigin(variant, source, rootPool, 'new_text', fieldLabel)
+    const newText = pickFieldWithOrigin(variant, source, rootPool, 'new_text', fieldLabel, true)
     markHoisted(startAnchor)
     markHoisted(endAnchor)
     markHoisted(newText)
@@ -1014,7 +1018,7 @@ function recoverEditFromCandidate(
     }
   }
   const anchor = pickFieldWithOrigin(variant, source, rootPool, 'anchor', fieldLabel)
-  const newText = pickFieldWithOrigin(variant, source, rootPool, 'new_text', fieldLabel)
+  const newText = pickFieldWithOrigin(variant, source, rootPool, 'new_text', fieldLabel, true)
   markHoisted(anchor)
   markHoisted(newText)
   if (anchor.value === undefined || newText.value === undefined) {
@@ -1146,7 +1150,10 @@ function createReadTool(
       const limit = args.limit === undefined ? options.readLimit : positiveInteger(args.limit, 'limit')
       if (limit > options.readLimit) invalidArgument(`limit must not exceed ${options.readLimit}`)
 
-      const loaded = await loadStableFile(ctx, exec, filePath)
+      const loaded = await loadStableFile(ctx, exec, filePath, undefined, {
+        // explicit offset/limit is a windowed read; the reply stays bounded by readLimit
+        allowLargeFile: args.offset !== undefined || args.limit !== undefined,
+      })
       const file = splitTextFile(loaded.content)
       if (file.lines.length > 0 && offset > file.lines.length) {
         throw hashlineError(
@@ -1241,7 +1248,10 @@ function createEditTool(
         throw hashlineError('HASHLINE_AGENT_REQUIRED', `${toolName} requires an agent-backed tool execution`)
       }
       const policy = await sandbox.resolve(args, exec, toolName)
-      const loaded = await loadStableFile(ctx, exec, filePath, policy?.workspaceRoot)
+      const loaded = await loadStableFile(ctx, exec, filePath, policy?.workspaceRoot, {
+        // edits stay safe via per-edit new_text bounds plus the write-intent CAS
+        allowLargeFile: true,
+      })
 
       // Recording the stable snapshot before planning lets fs-observation-policy
       // contribute the same current version to the write-intent waterfall.

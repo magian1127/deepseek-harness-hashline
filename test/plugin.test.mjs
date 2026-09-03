@@ -1491,8 +1491,43 @@ test('hashline_read 在 stat size 超限时于 readText 前拒绝', async () => 
   const tool = harness.tools.get('hashline_read')
   await assert.rejects(tool.execute({ file_path: 'sample.txt' }, harness.exec), error => {
     assert.equal(error.code, 'HASHLINE_FILE_TOO_LARGE')
+    assert.match(error.message, /offset and limit/)
     return true
   })
+})
+
+test('hashline_read 显式 limit 窗口可读取超限文件', async () => {
+  const harness = createHarness({ content: 'a'.repeat(50 * 1024 + 1) })
+  apply(harness.ctx)
+  const result = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt', limit: 1 }, harness.exec)
+  assert.equal(result.totalLines, 1)
+  assert.equal(result.lines.length, 1)
+})
+
+test('hashline_read 显式 offset 窗口读取超限多行文件并返回锚点', async () => {
+  const harness = createHarness({
+    content: Array.from({ length: 600 }, (_, i) => `${String(i).padStart(4, '0')} ${'b'.repeat(100)}`).join('\n'),
+  })
+  apply(harness.ctx)
+  const result = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt', offset: 3, limit: 2 }, harness.exec)
+  assert.equal(result.totalLines, 600)
+  assert.equal(result.lines.length, 2)
+  assert.match(result.lines[0].anchor, /^3:/)
+})
+
+test('hashline_edit 可编辑超限文件（窗口锚点 + CAS 写入）', async () => {
+  const harness = createHarness({
+    content: Array.from({ length: 600 }, (_, i) => `${String(i).padStart(4, '0')} ${'b'.repeat(100)}`).join('\n'),
+  })
+  apply(harness.ctx)
+  const read = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt', offset: 3, limit: 1 }, harness.exec)
+  const result = await harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ op: 'set_line', anchor: read.lines[0].anchor, new_text: 'edited' }],
+  }, harness.exec)
+  assert.equal(result.changed, true)
+  assert.equal(result.editsApplied, 1)
+  assert.equal(harness.writeCalls.length, 1)
 })
 
 test('hashline_read 保持 readLimit 行数限制', async () => {
@@ -1515,6 +1550,32 @@ test('hashline_edit 拒绝超长 new_text 且不触发文件 I/O', async () => {
   })
   assert.equal(harness.resolveCalls.length, 0)
   assert.equal(harness.writeCalls.length, 0)
+})
+
+test('hashline_edit 扁平 set_line 空 new_text 删除该行', async () => {
+  const harness = createHarness({ content: 'a\nb\nc\n' })
+  apply(harness.ctx)
+  const read = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt' }, harness.exec)
+  const result = await harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ op: 'set_line', anchor: read.lines[1].anchor, new_text: '' }],
+  }, harness.exec)
+  assert.equal(result.changed, true)
+  assert.equal(result.removedLines, 1)
+  assert.equal(harness.content, 'a\nc\n')
+})
+
+test('hashline_edit 嵌套 set_line 空 new_text 删除该行（方言回收不吞空串）', async () => {
+  const harness = createHarness({ content: 'a\nb\nc\n' })
+  apply(harness.ctx)
+  const read = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt' }, harness.exec)
+  const result = await harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ set_line: { anchor: read.lines[1].anchor, new_text: '' } }],
+  }, harness.exec)
+  assert.equal(result.changed, true)
+  assert.equal(result.removedLines, 1)
+  assert.equal(harness.content, 'a\nc\n')
 })
 
 test('scoped prompt 第二段注册失败会回滚 deny 和替换表面', () => {

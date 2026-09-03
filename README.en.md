@@ -106,6 +106,8 @@ The exact card order, defaults, and ranges are maintained only in the [Usage gui
 
 **Can a short hash collide?** A short hash has a theoretical collision probability. The default 4 hexadecimal characters provide a 16-bit check and are combined with the line number and file-level version CAS. Increase `hashLength` for higher-risk deployments.
 
+**How do I read large files?** A read without `offset`/`limit` is capped at 50 KiB and the tool then tells you to switch to windows. Pass explicit `offset`/`limit` to read any file in bounded windows; windowed reads and edits are not limited by total file size (each `new_text` still respects the 50 KiB cap).
+
 **How does Replace built-in read/edit work?** When enabled, an allowed agent sees strict `read` and `edit` surfaces while `hashline_read` and `hashline_edit` are hidden. Call `read` before each change and use its fresh anchors. Each `edit.edits` element is a flat object: `op` is `set_line`, `replace_lines`, or `insert_after`, with `anchor` (or `start_anchor`+`end_anchor`) and `new_text`. Disabling the setting restores the original tools. Replacement is installed only when all four original capabilities are already visible, so it cannot bypass visibility restrictions. The same Agent scope also replaces the built-in prompt guidance and restores it when disabled. **Under the minimal preset, no replacement is installed**: the plugin only hides the global `hashline_read` / `hashline_edit` in that agent's scope, keeping the "persistent shell + str_replace_editor" two-tool composition free of third-party capabilities. This hiding does **not** depend on the "Replace built-in read/edit" switch: it applies to minimal agents whenever the plugin is enabled.
 
 ## Development documentation

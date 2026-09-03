@@ -116,6 +116,10 @@ node bin/dsh-hashline.mjs remove --profile web
 **哈希会碰撞吗？** 短哈希有理论碰撞概率：默认 4 hex 相当于 16 位校验，与行号和文件级版本 CAS 联合使用；
 高风险部署可在配置中提高 `hashLength`。
 
+**大文件怎么读？** 不带 `offset`/`limit` 的整体读取限制为 50 KiB，超过时工具会提示改用窗口；显式带上
+`offset`/`limit` 即可分窗口读取任意大小的文件，窗口读取与编辑均不受整文件大小限制（单条 `new_text`
+仍受 50 KiB 上限约束）。
+
 **“替换内置读写”怎么用？** 开启后，允许编辑的智能体看到的是严格锚定的 `read` / `edit`，
 `hashline_read` / `hashline_edit` 被隐藏。每次修改先用 `read` 获取最新锚点；`edit.edits` 的每项是扁平对象——`op` 取
   `set_line`、`replace_lines` 或 `insert_after`，配 `anchor`（或 `start_anchor`+`end_anchor`）与 `new_text`。关闭开关恢复原工具。
