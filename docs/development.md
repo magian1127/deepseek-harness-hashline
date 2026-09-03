@@ -109,7 +109,8 @@ npm pack --dry-run --json
 
 - `check`：先执行完整 TypeScript/客户端构建，再对生成的 `lib/` 和 `test/` 做语法检查。
 - `test`：运行四组回归（core、presentation、plugin、client），覆盖 BOM、CRLF/LF、末尾换行、删除、批量顺序、重叠拒绝、
-  锚点过期、稳定读取、版本竞争、沙箱策略、一次性审批、文件观察事件、根级 object + `edits.items.oneOf` schema、
+  锚点过期、稳定读取、版本竞争、沙箱策略、一次性审批、文件观察事件、根级 object + 扁平 `op` 判别 items schema、
+  方言回收（顶层散落/数字键影子/项内提升/根级单操作/冲突拒绝/指纹模板）、锚点 `|` 分隔符容忍、
   严格替换入口拒绝无锚点调用、读取 envelope、diff meta 与回放回退、设置热切换、智能体作用域替换和客户端卡片。测试用 `test/fixtures/dsh-home` 假 profile
   隔离 DSH 运行时 peer，不依赖真实安装。
 - `pack --dry-run`：`prepack` 会自动重跑 `check` 与 `test`；发布清单包含 `lib/`（含 `presentation.js`）、
@@ -147,17 +148,20 @@ Hashline 的 Host 验收必须以真实 `hashline_read` / `hashline_edit` 调用
 
 真实环境 schema 约束（实测发现）：模型路由要求工具参数 schema **根节点**必须是 `type: "object"`；
 无 `type` 的根级 `oneOf` 会在工具列表下发时被模型 API 拒绝（`Invalid schema for function ... got
-'type: null'`），并导致插件工具整体不可用。这个限制不能外推到嵌套节点：DSH 输入 schema 支持
-`edits.items: { oneOf: [...] }`，插件用三个封闭对象分支表达每项恰好一个操作（0.2.0 起全局与
-严格替换入口同形）；执行器仍以 `normalizeEditRequest` / `parseEditEntries` 防御旧回放和直接调用。output schema 不进模型请求，可继续使用 oneOf。
+'type: null'`），并导致插件工具整体不可用。嵌套 `items.oneOf` 虽然可被路由接受（0.2.x 实测），但
+它是结构化输出的薄弱形状：真实会话中模型反复出现「edits 数组项只剩空壳、anchor/new_text 被提升到
+参数根、数组项被物化为根级数字键」的层级损坏，请求在到达插件前即失败。0.3.0 起 `edits.items` 改用
+扁平 `op` 判别形状（根 → 数组 → 平铺键值，无嵌套对象、无 oneOf），从形态上消灭这类错误；op 与字段
+匹配在执行层校验，历史嵌套形状仍被接受用于旧回放，`normalizeEditRequest` 同时回收常见畸形包装（见
+`design.md` 工具边界）。output schema 不进模型请求，可继续使用 oneOf。
 
 ### 严格替换的真实运行态复验
 
 重启 DSH 后，以 active profile 和实际新建 Agent 的工具契约为准，确认 `hashline.enabled=true`、`replaceBuiltinEdit=true`，并确认 profile 中的 Hashline 包指向当前构建产物。真实验收只使用内置名称 `read` / `edit` 操作隔离测试文件：
 
-- `read` 输出最新 `LINE:HASH` 锚点；`edit` 的参数根为 `type: "object"`，必填 `file_path` / `edits`，`edits.items.oneOf` 是三个封闭的 `set_line` / `replace_lines` / `insert_after` 分支，且不公开 `old_string` / `new_string` / `replace`。
+- `read` 输出最新 `LINE:HASH` 锚点；`edit` 的参数根为 `type: "object"`，必填 `file_path` / `edits`，`edits.items` 是扁平 `op` 判别对象（`op` + 锚点字段 + `new_text`），且不公开 `old_string` / `new_string` / `replace`。
 - 一次 `edit` 可以携带两个独立的 `set_line` 数组项，并在同一稳定快照上成功写入；本次实机结果为 `ALPHA`、`beta`、`GAMMA`，没有重试，也没有退回文本替换。
-- 这证明当前模型路由可接受嵌套 `items.oneOf`；根级 `oneOf` 仍不可用。静态构建、单测和 HTTP bundle 响应都不能替代真实工具 schema、真实调用和真实文件结果的 Host 验收。
+- 0.2.x 实机复验曾证明模型路由可接受嵌套 `items.oneOf`（根级 `oneOf` 至今仍不可用），但真实会话暴露其为结构化输出薄弱形状，0.3.0 已改用扁平 `op` 判别。静态构建、单测和 HTTP bundle 响应都不能替代真实工具 schema、真实调用和真实文件结果的 Host 验收。
 - 原始失败的关键经验是：同一 `edits[i]` 塞入多个变体会连续失败，模型随后转用 `old_string/new_string` 虽可通过文件版本 CAS，却没有绑定最近读取的 `LINE:HASH`。严格替换因此必须同时收紧 schema、工具说明、scoped prompt 和执行层；0.2.0 起全局 `hashline_edit` 与严格替换同形，不再保留兼容文本替换。
 
 测试文件验收后立即删除，避免把临时路径和用户数据带入仓库或发布包。
@@ -168,3 +172,11 @@ Host 与 Web 的实现源码均为 `src/` 下的 TypeScript。`npm run build` �
 JavaScript 与声明文件，并将客户端源码打包为按 DSH client module 约定交付的经典 `__ModuleLoader__`
 bundle；发布包只消费 `lib/` 产物，不要求安装时再转译。标准安装命令把 `cordis.patch.yml` 作为 profile
 bundle 层加入，并从 package manifest 发现 client bundle。
+
+## 安全审计（2026-09）
+
+项目专属要点（完整清单见工作区根 `docs/audit-2026-09.md`，勿在此复制）：
+
+- 高危两项均已在 0.3.0 修复：`loadStableFile` 增加 50KiB 三层字节防护（stat 前置 / 读后校验 / 编辑参数递归，超限抛 `HASHLINE_FILE_TOO_LARGE`）；scoped 注册部分失败改为 `added[]` 统一可逆清理（回归覆盖第二段失败时释放 deny restriction）。
+- 中危两项均已在 0.3.0 修复：CLI `--profile` 增加 `validateProfileName` 穿越校验；扁平 op 按 `EDIT_KINDS` 逐操作校验锚点字段，多余锚点字段拒绝而非静默忽略。
+- 升级策略：全局工具名冲突时直接抛错会炸整个 composition，应先探测再注册；`client.ts` 已完整构造 ReadBlock 7 字段 labels（正面范例，升版仍需复核）；`runtime-entry.ts` 的 query-string 缓存 shim 仅限开发链路，勿扩大依赖。

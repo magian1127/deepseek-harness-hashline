@@ -16,9 +16,16 @@ stale read，并把多处修改作为一个原子请求处理。它不判断代�
   `insert_after`。简单唯一字面替换是内置 `edit` 的职责；`old_string` / `new_string` / `replace_all`
   与 `edits[].replace` 在 execute 内（sandbox、审批与文件 I/O 之前）被拒绝并指引内置 `edit`，仅容忍
   适配器物化的精确空哨兵。参数根 schema 保持 `type: "object"`（真实模型路由会拒绝无 `type` 的根级
-  oneOf）。`edits.items` 使用嵌套 `oneOf`，每个分支是只含一个操作键的封闭对象，让模型面对的 schema
-  明确表达“一项一个操作”；原始 `ctx.tools.register` 路径不会自动校验输入值，真正的执行时强制仍由
-  `parseEditEntries` 完成，并防御旧回放和直接调用；
+  oneOf）。0.3.0 起 `edits.items` 改为**扁平 op 判别形状**（`{op, anchor?, start_anchor?, end_anchor?,
+  new_text}`，嵌套四层降为两层、无 oneOf 分支）——深层嵌套/oneOf 是模型结构化输出的已知弱点，
+  实测失败样本均为「字段提升到参数根、数组项物化为根级数字键、变体空壳」等层级损坏，扁平形状
+  在形态上消灭这类错误。op 与字段的匹配在执行层校验；历史嵌套变体形状仍被 `parseEditEntries`
+  接受（旧回放与方言回收）。`normalizeEditRequest` 在此之上做**方言回收**：顶层散落字段、
+  根级数字键影子、项内字段提升、丢失信封的根级单操作，只要能无歧义恢复出锚定操作就接受，
+  结果注明 `normalizedFrom`（宽容可观测），全等影子去重；字段冲突或无法归属即拒绝，错误附带
+  收到参数的结构指纹（仅键名与形状，不含内容）与 canonical 形状模板。原始
+  `ctx.tools.register` 路径不会自动校验输入值，真正的执行时强制仍由 `parseEditEntries` 完成，
+  并防御旧回放和直接调用；
 - `replaceBuiltinEdit` 显式开启时，只在具体智能体的自身作用域注册严格哈希锚定的 `read` 与 `edit`，可逆遮蔽其继承的原工具。
   该 `edit` 与全局 `hashline_edit` 是同一锚定-only 契约：`edits` 必填且非空，只含
   `set_line` / `replace_lines` / `insert_after`；执行层同样拒绝 `old_string` / `new_string` /
@@ -34,7 +41,8 @@ stale read，并把多处修改作为一个原子请求处理。它不判断代�
 
 ## 锚点
 
-锚点格式为 `LINE:HASH`。哈希是该行文本与真实行尾连接后的 SHA-256 前缀，默认 4 hex。
+锚点格式为 `LINE:HASH`（编辑参数里从读取输出直接抄来的 `LINE|HASH` 也被接受并等价处理）。
+哈希是该行文本与真实行尾连接后的 SHA-256 前缀，默认 4 hex。
 BOM 作为文件元数据单独保存，不进入首行哈希。这样首行显示内容、锚点输入和编辑语义一致，
 而文件级版本 CAS 仍会捕获并发 BOM 变化。
 

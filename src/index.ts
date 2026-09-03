@@ -8,12 +8,16 @@ import {
   DEFAULT_HASH_LENGTH,
   DEFAULT_MAX_LINE_LENGTH,
   DEFAULT_READ_LIMIT,
+  MAX_FILE_BYTES,
+  EDIT_KINDS,
   HashlineError,
+  requireString,
   lineRecord,
   planEdits,
   parseEditEntries,
   previewContent,
   splitTextFile,
+  type EditKind,
   type EditOptions,
   type EditPlan,
   type HashlineErrorDetails,
@@ -299,6 +303,27 @@ function requirePath(value: unknown): string {
   return value
 }
 
+function assertBoundedText(value: unknown, label = 'new_text'): void {
+  if (typeof value !== 'object' || value === null) return
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertBoundedText(item, `${label}[${index}]`))
+    return
+  }
+  for (const [key, item] of Object.entries(value)) {
+    if ((key === 'new_text' || key === 'content') && typeof item === 'string') {
+      const size = Buffer.byteLength(item, 'utf8')
+      if (size > MAX_FILE_BYTES) {
+        throw hashlineError(
+          'HASHLINE_FILE_TOO_LARGE',
+          `${key} is too large (${size} bytes; limit ${MAX_FILE_BYTES}); split the edit into smaller operations`,
+          { field: `${label}.${key}`, size, maxBytes: MAX_FILE_BYTES },
+        )
+      }
+    }
+    assertBoundedText(item, `${label}.${key}`)
+  }
+}
+
 function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
   const extras = Object.keys(value).filter((key) => !allowed.includes(key))
   if (extras.length > 0) invalidArgument(`${label} contains unsupported field(s): ${extras.join(', ')}`)
@@ -509,8 +534,23 @@ async function loadStableFile(
     if (before.type !== 'file') {
       throw hashlineError('HASHLINE_NOT_A_FILE', `not a regular file: ${target.displayPath}`)
     }
+      if (before.size !== undefined && before.size > MAX_FILE_BYTES) {
+        throw hashlineError(
+          'HASHLINE_FILE_TOO_LARGE',
+          `file is too large for hashline (${before.size} bytes; limit ${MAX_FILE_BYTES}); use the built-in read tool or split the file`,
+          { size: before.size, maxBytes: MAX_FILE_BYTES },
+        )
+      }
 
-    const content = await ctx.fs.readText(target, exec.signal)
+      const content = await ctx.fs.readText(target, exec.signal)
+      const contentBytes = Buffer.byteLength(content, 'utf8')
+      if (contentBytes > MAX_FILE_BYTES) {
+        throw hashlineError(
+          'HASHLINE_FILE_TOO_LARGE',
+          `file is too large for hashline (${contentBytes} bytes; limit ${MAX_FILE_BYTES}); use the built-in read tool or split the file`,
+          { size: contentBytes, maxBytes: MAX_FILE_BYTES },
+        )
+      }
     const after = await ctx.fs.stat(target, exec.signal)
     if (after !== undefined && after.type === 'file' && after.version === before.version) {
       return { target, info: after, content }
@@ -561,63 +601,56 @@ interface EditResultValue {
   preview: LineRecord[]
   /** 内部展示投影：写入成功后立即计算的紧凑 hunks；不保存完整 before/after。 */
   presentation?: { diffs: FileDiff[] }
+  /** 方言回收来源（如 hoisted-fields / numeric-keys / deduped）；正常调用为空。 */
+  normalizedFrom?: string[]
 }
 
 function renderEdit(value: EditResultValue, toolName = 'hashline_edit', readToolName = 'hashline_read'): unknown[] {
-  const summary = value.changed
+  const base = value.changed
     ? `${toolName}: applied ${value.editsApplied} edit(s) to ${value.path}; lines removed=${value.removedLines}, lines added=${value.addedLines}`
     : `${toolName}: no change was needed for ${value.path}`
-  if (value.preview.length === 0) return [{ type: 'text', text: summary }]
+  // 方言回收成功时透明注明来源与正确形状，让模型下一轮直接用 canonical 形状。
+  const normalized =
+    value.normalizedFrom !== undefined && value.normalizedFrom.length > 0
+      ? `${base} (arguments were normalized from a malformed shape: ${value.normalizedFrom.join(', ')}; canonical edits item: {"op":"set_line","anchor":"LINE:HASH","new_text":"..."})`
+      : base
+  if (value.preview.length === 0) return [{ type: 'text', text: normalized }]
   // 预览是首个变更点周围的上下文窗口而非全量锚点清单；文案里明说窗口范围与
   // 总行数，避免模型误读为“缺行”而多跑一轮 read 验证（2026-09-01 PTC 实测）。
   const first = value.preview[0].number
   const last = value.preview[value.preview.length - 1].number
-  return [{ type: 'text', text: `${summary}\nContext around first change (lines ${first}-${last} of ${value.totalLines}; run ${readToolName} again for the full file):\n${value.preview.map(formatLine).join('\n')}` }]
+  return [{ type: 'text', text: `${normalized}\nContext around first change (lines ${first}-${last} of ${value.totalLines}; run ${readToolName} again for the full file):\n${value.preview.map(formatLine).join('\n')}` }]
 }
 
-// 工具参数根节点必须保持 type: object；数组项可以使用 DSH 已支持的嵌套 oneOf。
-// 把每种操作放进独立分支，令模型在生成参数时就看到"一项一个操作"的结构；
-// parseEditEntries 仍在执行前做同样校验，防御旧回放和绕过 schema 的直接调用。
+// 工具参数根节点必须保持 type: object。0.3.0 起 edits.items 改为扁平 op 判别形状：
+// 根 → 数组 → 平铺键值，数组项内没有嵌套对象，也没有 oneOf 分支。实测模型对深层
+// 嵌套/oneOf 的参数生成会频繁出现字段提升、数组项物化到顶层（数字键）等结构损坏；
+// 扁平形状直接消灭这类错误形态。op 与字段的匹配在执行层（parseEditEntries +
+// normalizeEditRequest 的方言回收）校验，旧嵌套变体形状仍被接受用于旧回放与宽容回收。
 function editItemSchema(zhPrompt: boolean, readToolName: string): JsonSchema {
   const anchorDesc = zhPrompt
-    ? `从 ${readToolName} 复制的最新 LINE:HASH 锚点，例如 "42:f7a9"。`
-    : `Fresh LINE:HASH anchor copied from ${readToolName}, for example "42:f7a9".`
-  const setLineNewText = zhPrompt ? '替换内容；空字符串删除该行。' : 'Replacement content; an empty string deletes the anchored line.'
-  const startAnchor = zhPrompt ? '包含范围内首行的最新锚点。' : 'Fresh anchor for the first line in the inclusive range.'
-  const endAnchor = zhPrompt ? '包含范围内末行的最新锚点。' : 'Fresh anchor for the last line in the inclusive range.'
-  const rangeNewText = zhPrompt ? '替换内容；空字符串删除该范围。' : 'Replacement content; an empty string deletes the range.'
-  const insertAnchor = zhPrompt ? '在其后插入内容的那一行的最新锚点。' : 'Fresh anchor of the line after which content is inserted.'
-  const insertNewText = zhPrompt ? '要插入的内容。不能为空。' : 'Content to insert. It must not be empty.'
-  const variants: JsonSchema[] = [
-    {
-      type: 'object', additionalProperties: false, required: ['set_line'],
-      properties: {
-        set_line: {
-          type: 'object', additionalProperties: false, required: ['anchor', 'new_text'],
-          properties: { anchor: { type: 'string', description: anchorDesc }, new_text: { type: 'string', description: setLineNewText } },
-        },
-      },
+    ? `从 ${readToolName} 复制的最新 LINE:HASH 锚点，例如 "42:f7a9"；set_line 与 insert_after 必填。`
+    : `Fresh LINE:HASH anchor copied from ${readToolName}, for example "42:f7a9"; required for set_line and insert_after.`
+  const opDesc = zhPrompt
+    ? '操作类型：set_line（替换一行，需 anchor+new_text）、replace_lines（替换范围，需 start_anchor+end_anchor+new_text）、insert_after（在锚行后插入，需 anchor+new_text 且非空）。'
+    : 'Operation kind: set_line (replace one line; needs anchor+new_text), replace_lines (replace a range; needs start_anchor+end_anchor+new_text), insert_after (insert after the anchored line; needs anchor+new_text, non-empty).'
+  const newTextDesc = zhPrompt
+    ? '替换或插入的内容。set_line/replace_lines 空字符串表示删除；insert_after 不允许为空。'
+    : 'Replacement or inserted content. An empty string means deletion for set_line/replace_lines; insert_after requires non-empty.'
+  const startAnchorDesc = zhPrompt ? '包含范围内首行的最新锚点（仅 replace_lines）。' : 'Fresh anchor for the first line in the inclusive range (replace_lines only).'
+  const endAnchorDesc = zhPrompt ? '包含范围内末行的最新锚点（仅 replace_lines）。' : 'Fresh anchor for the last line in the inclusive range (replace_lines only).'
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: ['op', 'new_text'],
+    properties: {
+      op: { type: 'string', enum: [...EDIT_KINDS], description: opDesc },
+      anchor: { type: 'string', description: anchorDesc },
+      start_anchor: { type: 'string', description: startAnchorDesc },
+      end_anchor: { type: 'string', description: endAnchorDesc },
+      new_text: { type: 'string', description: newTextDesc },
     },
-    {
-      type: 'object', additionalProperties: false, required: ['replace_lines'],
-      properties: {
-        replace_lines: {
-          type: 'object', additionalProperties: false, required: ['start_anchor', 'end_anchor', 'new_text'],
-          properties: { start_anchor: { type: 'string', description: startAnchor }, end_anchor: { type: 'string', description: endAnchor }, new_text: { type: 'string', description: rangeNewText } },
-        },
-      },
-    },
-    {
-      type: 'object', additionalProperties: false, required: ['insert_after'],
-      properties: {
-        insert_after: {
-          type: 'object', additionalProperties: false, required: ['anchor', 'new_text'],
-          properties: { anchor: { type: 'string', description: insertAnchor }, new_text: { type: 'string', description: insertNewText } },
-        },
-      },
-    },
-  ]
-  return { oneOf: variants }
+  }
 }
 
 const LINE_OUTPUT_SCHEMA: JsonSchema = {
@@ -686,6 +719,7 @@ const EDIT_OUTPUT_SCHEMA: JsonSchema = {
     eol: { type: 'string', enum: ['crlf', 'lf', 'mixed', 'unknown'] },
     bom: { type: 'boolean' },
     preview: { type: 'array', items: LINE_OUTPUT_SCHEMA },
+    normalizedFrom: { type: 'array', items: { type: 'string' } },
     presentation: {
       type: 'object',
       additionalProperties: false,
@@ -698,14 +732,113 @@ const EDIT_OUTPUT_SCHEMA: JsonSchema = {
 }
 
 /**
- * 解析编辑请求为统一的内部形式：只接受非空锚定 edits。旧 hybrid 入口
- * （old_string/new_string/replace_all 与 edits[].replace 变体）已在 0.2.0
- * 移除——字面替换属于内置 edit 的职责；传入即在 sandbox、审批与文件 I/O
- * 之前被拒绝，并明确引导改用内置 edit 或锚定操作。
+ * 解析编辑请求为统一的内部形式：schema 声明形状（扁平 op）之外，同时回收
+ * 模型/适配器常见的畸形包装——顶层散落字段（anchor/new_text 被提升到参数根）、
+ * 数组项内字段提升（变体对象缺字段、字段落在项级）、数组项被物化为根级数字键
+ * （"0"/"1"/...）以及完全丢失 edits 信封的根级单操作。只要能无歧义地恢复出
+ * 锚定操作就接受，并在工具输出中注明 normalizedFrom（宽容但可观测）；任何
+ * 字段冲突或无法归属的形状仍被拒绝。旧 hybrid 入口（old_string/new_string/
+ * replace_all 与 edits[].replace）在任何文件操作前被拒绝并指引内置 edit。
  */
 interface NormalizedEditRequest {
   filePath: string
   rawEdits: RawEdit[]
+  normalizedFrom: string[]
+}
+
+/** 参数根上 schema 声明的键；方言回收只从其余键收集字段。 */
+const DECLARED_ARGUMENT_KEYS: readonly string[] = [
+  'file_path',
+  'edits',
+  'old_string',
+  'new_string',
+  'replace_all',
+  'sandbox_permissions',
+  'justification',
+]
+
+/** 方言回收可识别的字段/操作键；顶层其余未知键仍响亮拒绝。 */
+const RECOVERABLE_KEYS: readonly string[] = [
+  'anchor',
+  'start_anchor',
+  'end_anchor',
+  'new_text',
+  'op',
+  ...EDIT_KINDS,
+]
+
+/** 适配器物化的精确空哨兵（'' / false / undefined / 全空字段对象）。 */
+function isEmptySentinel(value: unknown): boolean {
+  if (value === undefined || value === null) return false
+  if (typeof value === 'string') return value === ''
+  if (typeof value === 'boolean') return value === false
+  if (typeof value !== 'object' || Array.isArray(value)) return false
+  return Object.values(value).every((field) => field === '' || field === false || field === undefined)
+}
+
+/** 描述收到的参数结构（仅键名与形状，不含内容值），用于失败时的诊断。 */
+function describeArgumentShape(args: Record<string, unknown>): string {
+  const parts = [`top-level keys [${Object.keys(args).map((key) => JSON.stringify(key)).join(', ')}]`]
+  if (Array.isArray(args.edits)) {
+    const first = args.edits[0]
+    const firstKeys = first !== null && typeof first === 'object' && !Array.isArray(first)
+      ? `first item keys [${Object.keys(first).join(', ')}]`
+      : `first item ${typeof first}`
+    parts.push(`edits=array(${args.edits.length})`, firstKeys)
+  } else {
+    parts.push(`edits=${args.edits === undefined ? 'undefined' : typeof args.edits}`)
+  }
+  return parts.join('; ')
+}
+
+/** 无法恢复出任何锚定操作时的拒绝文案：附带结构指纹与可复制的正确形状。 */
+function noEditableOperations(args: Record<string, unknown>): never {
+  invalidArgument(
+    'edits must be a non-empty array of LINE:HASH-anchored operations.\n' +
+      `Received argument shape: ${describeArgumentShape(args)}\n` +
+      'Canonical shape: {"file_path":"src/app.js","edits":[{"op":"set_line","anchor":"42:f7a9","new_text":"replacement text"}]} ' +
+      '(op=set_line|insert_after needs anchor+new_text; op=replace_lines needs start_anchor+end_anchor+new_text).',
+  )
+}
+
+/** 从多层（变体对象 → 数组项 → 根级散落池）解析一个字符串字段；冲突即拒绝。 */
+function pickField(
+  layers: Array<Record<string, unknown> | undefined>,
+  field: string,
+  label: string,
+): string | undefined {
+  const values: string[] = []
+  for (const layer of layers) {
+    const raw = layer?.[field]
+    if (raw === undefined || isEmptySentinel(raw)) continue
+    values.push(requireString(raw, label))
+  }
+  const unique = [...new Set(values)]
+  if (unique.length > 1) {
+    invalidArgument(
+      `conflicting ${field} values for the same edit (${label}): ${JSON.stringify(unique[0])} vs ${JSON.stringify(unique[1])}; ` +
+        'no edit was applied',
+    )
+  }
+  return unique[0]
+}
+
+/** pickField 的同时记录字段是否来自根级散落池（用于 hoisted-fields 注记）。 */
+function pickFieldWithOrigin(
+  variant: Record<string, unknown> | undefined,
+  source: Record<string, unknown>,
+  rootPool: Record<string, unknown>,
+  field: string,
+  label: string,
+): { value: string | undefined; hoisted: boolean } {
+  const all = pickField([variant, source, rootPool], field, label)
+  if (all === undefined) return { value: undefined, hoisted: false }
+  const upper = pickField([variant, source], field, label)
+  return { value: all, hoisted: upper === undefined }
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function normalizeEditRequest(args: Record<string, unknown>): NormalizedEditRequest {
@@ -721,38 +854,176 @@ function normalizeEditRequest(args: Record<string, unknown>): NormalizedEditRequ
       'this tool only accepts LINE:HASH-anchored edits; use the built-in edit for old_string/new_string literal replacement',
     )
   }
-  if (!Array.isArray(args.edits)) {
+
+  // 根级散落池：被提升到参数根的可恢复字段（排除声明键与数字键）。
+  const rootPool: Record<string, unknown> = {}
+  for (const key of Object.keys(args)) {
+    if (DECLARED_ARGUMENT_KEYS.includes(key)) continue
+    if (/^\d+$/.test(key)) continue
+    if (!RECOVERABLE_KEYS.includes(key)) continue
+    rootPool[key] = args[key]
+  }
+
+  // 候选来源：edits 数组项 + 根级数字键（适配器把数组项物化到参数根的影子）。
+  const candidates: Array<{ source: Record<string, unknown>; label: string }> = []
+  const normalizedFrom: string[] = []
+  if (args.edits !== undefined && !Array.isArray(args.edits)) {
     invalidArgument('edits must be a non-empty array of LINE:HASH-anchored operations')
   }
-  // 某些 Tool 适配器会把 schema 中未选用的可选字段物化为空默认值（含把
-  // union 内未选中的编辑变体物化成空对象）。只忽略这些精确空哨兵；错误
-  // 类型或非空值仍进入 parseEditEntries 的严格校验。
-  const onlyEmptyVariant = (value: unknown): boolean => {
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
-    return Object.values(value).every((field) => field === '' || field === false || field === undefined)
+  if (Array.isArray(args.edits)) {
+    for (let index = 0; index < args.edits.length; index += 1) {
+      const entry = args.edits[index]
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+        invalidArgument(`edits[${index}] must be an object with exactly one anchored variant`)
+      }
+      candidates.push({ source: entry as Record<string, unknown>, label: `edits[${index}]` })
+    }
   }
+  const numericKeys = Object.keys(args)
+    .filter((key) => /^\d+$/.test(key))
+    .sort((left, right) => Number(left) - Number(right))
+  for (const key of numericKeys) {
+    const value = args[key]
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
+    candidates.push({ source: value as Record<string, unknown>, label: `args[${JSON.stringify(key)}]` })
+    if (!normalizedFrom.includes('numeric-keys')) normalizedFrom.push('numeric-keys')
+  }
+  // 完全丢失 edits 信封但根级散落池携带完整操作：用空候选走同一回收路径。
+  if (candidates.length === 0 && Object.keys(rootPool).length > 0) {
+    candidates.push({ source: {}, label: 'arguments' })
+    normalizedFrom.push('top-level')
+  }
+
   const rawEdits: RawEdit[] = []
-  for (let index = 0; index < args.edits.length; index += 1) {
-    const entry = args.edits[index]
-    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-      invalidArgument(`edits[${index}] must be an object with exactly one anchored variant`)
+  let hoisted = false
+  for (const { source, label } of candidates) {
+    const recovered = recoverEditFromCandidate(source, rootPool, label)
+    if (recovered !== undefined) {
+      rawEdits.push(recovered.edit)
+      if (recovered.hoisted) hoisted = true
     }
-    const record = entry as Record<string, unknown>
-    if (record.replace !== undefined && !onlyEmptyVariant(record.replace)) {
-      invalidArgument(`edits[${index}].replace is not accepted; use the built-in edit for literal replacement`)
-    }
-    const owned: Record<string, unknown> = {}
-    for (const key of ['set_line', 'replace_lines', 'insert_after'] as const) {
-      const value = record[key]
-      if (value !== undefined && !onlyEmptyVariant(value)) owned[key] = value
-    }
-    if (Object.keys(owned).length === 0) continue
-    rawEdits.push(owned as RawEdit)
   }
-  if (rawEdits.length === 0) {
-    invalidArgument('edits must be a non-empty array of LINE:HASH-anchored operations')
+  if (rawEdits.length === 0) noEditableOperations(args)
+  if (hoisted && !normalizedFrom.includes('hoisted-fields')) normalizedFrom.push('hoisted-fields')
+
+  // 全等去重：同一操作被多份影子携带（edits 项 + 数字键 + 根级）时折叠为一个。
+  const deduped: RawEdit[] = []
+  const seen = new Set<string>()
+  for (const edit of rawEdits) {
+    const key = JSON.stringify(edit)
+    if (seen.has(key)) {
+      if (!normalizedFrom.includes('deduped')) normalizedFrom.push('deduped')
+      continue
+    }
+    seen.add(key)
+    deduped.push(edit)
   }
-  return { filePath, rawEdits }
+
+  // 声明键与方言键之外的未知键仍响亮拒绝，拼写错误不被静默吞掉。
+  const unknown = Object.keys(args).filter(
+    (key) =>
+      !DECLARED_ARGUMENT_KEYS.includes(key) &&
+      !/^\d+$/.test(key) &&
+      !RECOVERABLE_KEYS.includes(key),
+  )
+  if (unknown.length > 0) {
+    invalidArgument(`arguments contain unsupported field(s): ${unknown.join(', ')}`)
+  }
+
+  return { filePath, rawEdits: deduped, normalizedFrom }
+}
+
+/**
+ * 从单个候选项（edits 数组项 / 数字键影子 / 空根级候选）恢复一个锚定操作。
+ * kind 判定优先级：项内唯一非空变体键 > 项内 op > 根级池唯一非空变体键 > 根级池 op。
+ * 字段按 变体对象 → 项 → 根级池 三层解析，缺失补全、冲突拒绝；kind 或任一
+ * 字段实际取自根级池时标记 hoisted（宽容可观测）。
+ */
+function recoverEditFromCandidate(
+  source: Record<string, unknown>,
+  rootPool: Record<string, unknown>,
+  label: string,
+): { edit: RawEdit; hoisted: boolean } | undefined {
+  // 非空 replace 变体（0.2.0 移除的字面替换）需要专属拒绝并指引内置 edit，
+  // 不能落入泛型的 noEditableOperations；空哨兵照常忽略。
+  for (const holder of [source, rootPool]) {
+    const replace = holder.replace
+    if (replace !== undefined && !isEmptySentinel(replace)) {
+      invalidArgument(`${label}.replace is not accepted; use the built-in edit for literal replacement`)
+    }
+  }
+  // 变体键即使值是空哨兵也携带 kind 信号（样本①：edits[0]={set_line:{}}，
+  // 字段全在根级）——先按键名收集，哨兵对象在字段解析时当作无字段载体。
+  const variantEntries = (EDIT_KINDS as readonly string[])
+    .map((kind) => ({ kind, value: source[kind] }))
+    .filter(({ value }) => value !== undefined)
+  const nonEmptyVariantEntries = variantEntries.filter(({ value }) => !isEmptySentinel(value))
+  if (nonEmptyVariantEntries.length > 1) {
+    invalidArgument(
+      `${label} must contain exactly one variant (set_line | replace_lines | insert_after); put each operation in its own edits array element`,
+    )
+  }
+  // 非空变体键唯一时用它；否则（全空哨兵或无变体键）回退到首个键名作为 kind 信号。
+  const effectiveVariantEntry = nonEmptyVariantEntries[0] ?? variantEntries[0]
+  if (effectiveVariantEntry !== undefined && !isPlainRecord(effectiveVariantEntry.value)) {
+    invalidArgument(`${label}.${effectiveVariantEntry.kind} must be an object`)
+  }
+
+  const rootVariantEntries = (EDIT_KINDS as readonly string[])
+    .map((kind) => ({ kind, value: rootPool[kind] }))
+    .filter(({ value }) => value !== undefined && !isEmptySentinel(value))
+    .filter(({ value }) => isPlainRecord(value))
+
+  let kind: EditKind | undefined
+  let variant: Record<string, unknown> | undefined
+  let hoisted = false
+  if (effectiveVariantEntry !== undefined) {
+    kind = effectiveVariantEntry.kind as EditKind
+    variant = isEmptySentinel(effectiveVariantEntry.value)
+      ? undefined
+      : (effectiveVariantEntry.value as Record<string, unknown>)
+  } else if (typeof source.op === 'string' && (EDIT_KINDS as readonly string[]).includes(source.op)) {
+    kind = source.op as EditKind
+  } else if (rootVariantEntries.length === 1) {
+    kind = rootVariantEntries[0].kind as EditKind
+    variant = rootVariantEntries[0].value as Record<string, unknown>
+    hoisted = true
+  } else if (typeof rootPool.op === 'string' && (EDIT_KINDS as readonly string[]).includes(rootPool.op)) {
+    kind = rootPool.op as EditKind
+    hoisted = true
+  }
+  if (kind === undefined) return undefined
+
+  const fieldLabel = `${label} ${kind}`
+  const markHoisted = (field: { hoisted: boolean }): void => {
+    if (field.hoisted) hoisted = true
+  }
+  if (kind === 'replace_lines') {
+    const startAnchor = pickFieldWithOrigin(variant, source, rootPool, 'start_anchor', fieldLabel)
+    const endAnchor = pickFieldWithOrigin(variant, source, rootPool, 'end_anchor', fieldLabel)
+    const newText = pickFieldWithOrigin(variant, source, rootPool, 'new_text', fieldLabel)
+    markHoisted(startAnchor)
+    markHoisted(endAnchor)
+    markHoisted(newText)
+    if (startAnchor.value === undefined || endAnchor.value === undefined || newText.value === undefined) {
+      invalidArgument(`replace_lines requires start_anchor, end_anchor and new_text (${fieldLabel})`)
+    }
+    return {
+      edit: { replace_lines: { start_anchor: startAnchor.value, end_anchor: endAnchor.value, new_text: newText.value } },
+      hoisted,
+    }
+  }
+  const anchor = pickFieldWithOrigin(variant, source, rootPool, 'anchor', fieldLabel)
+  const newText = pickFieldWithOrigin(variant, source, rootPool, 'new_text', fieldLabel)
+  markHoisted(anchor)
+  markHoisted(newText)
+  if (anchor.value === undefined || newText.value === undefined) {
+    invalidArgument(`${kind} requires anchor and new_text (${fieldLabel})`)
+  }
+  return {
+    edit: { [kind]: { anchor: anchor.value, new_text: newText.value } } as RawEdit,
+    hoisted,
+  }
 }
 
 function editParameters(
@@ -761,8 +1032,8 @@ function editParameters(
   readToolName: string,
 ): JsonSchema {
   const filePathField = { type: 'string', description: zhPrompt ? '要编辑的路径，由 DSH 文件系统后端解析。' : 'Path to edit, resolved by the DSH filesystem backend.' }
-  // 模型路由要求函数参数根节点为 type: object；嵌套 oneOf 是 DSH 模型输入
-  // 工具支持的形状，让 edits 的每个数组项在 schema 层就只能选择一个操作分支。
+  // 模型路由要求函数参数根节点为 type: object；edits.items 是扁平 op 判别形状
+  // （0.3.0 起），避免深层嵌套/oneOf 导致的结构化输出损坏；op 与字段匹配在执行层校验。
   return {
     type: 'object',
     additionalProperties: false,
@@ -772,8 +1043,8 @@ function editParameters(
       edits: {
         type: 'array',
         description: zhPrompt
-          ? '必填的非空锚定编辑列表。每个数组项必须是只含 set_line、replace_lines 或 insert_after 之一的独立对象。'
-          : 'Required non-empty anchored edit list. Every array element must be a separate object containing exactly one of set_line, replace_lines, or insert_after.',
+          ? '必填的非空编辑列表。每项是扁平对象：op 取 set_line、replace_lines 或 insert_after，配 anchor（或 start_anchor+end_anchor）与 new_text。'
+          : 'Required non-empty edit list. Each element is a flat object: op is set_line, replace_lines, or insert_after, with anchor (or start_anchor+end_anchor) and new_text.',
         items: editItemSchema(zhPrompt, readToolName),
       },
       ...sandbox.schemaFields,
@@ -786,6 +1057,7 @@ function resultFromContent(
   content: string,
   plan: EditPlan,
   options: EditOptions,
+  normalizedFrom?: string[],
 ): EditResultValue {
   const file = splitTextFile(content)
   return {
@@ -795,10 +1067,11 @@ function resultFromContent(
     removedLines: plan.changed ? plan.removedLines : 0,
     addedLines: plan.changed ? plan.addedLines : 0,
     firstChangedLine: plan.changed ? plan.firstChangedLine : null,
-      totalLines: file.lines.length,
+    totalLines: file.lines.length,
     eol: file.eol,
     bom: file.bom,
     preview: previewContent(content, plan.firstChangedLine, options),
+    ...(normalizedFrom !== undefined && normalizedFrom.length > 0 ? { normalizedFrom } : {}),
   }
 }
 
@@ -941,8 +1214,8 @@ function createEditTool(
       // 替换形态（toolName=edit）下内置 edit 已被替换，不再出现否定句或
       // “简单字面替换请用内置 edit”指引；全局形态保留该指引（两者并存）。
       description: options.zhPrompt
-        ? `用 ${readToolName} 最新输出中的 LINE:HASH 锚点编辑现有 UTF-8 文本文件。edits 必须非空，每个数组项只包含 set_line、replace_lines 或 insert_after 中的一个操作。${toolName === 'edit' ? '' : '简单字面替换请用内置 edit。'}所有锚点在写入前针对同一稳定快照统一校验。`
-        : `Edit an existing UTF-8 text file with fresh LINE:HASH anchors from ${readToolName}. edits is required and non-empty; every array element must contain exactly one set_line, replace_lines, or insert_after operation.${toolName === 'edit' ? '' : ' Use the built-in edit for a simple unique literal replacement.'} All anchors are verified against one stable snapshot before writing.`,
+        ? `用 ${readToolName} 最新输出中的 LINE:HASH 锚点编辑现有 UTF-8 文本文件。edits 必须非空，每项用 op 选择 set_line、replace_lines 或 insert_after 并配齐锚点字段。${toolName === 'edit' ? '' : '简单字面替换请用内置 edit。'}所有锚点在写入前针对同一稳定快照统一校验。`
+        : `Edit an existing UTF-8 text file with fresh LINE:HASH anchors from ${readToolName}. edits is required and non-empty; each element picks set_line, replace_lines, or insert_after via op with the matching anchor fields.${toolName === 'edit' ? '' : ' Use the built-in edit for a simple unique literal replacement.'} All anchors are verified against one stable snapshot before writing.`,
     parameters: editParameters(sandbox, options.zhPrompt, readToolName),
     output: {
       schema: EDIT_OUTPUT_SCHEMA,
@@ -956,16 +1229,11 @@ function createEditTool(
     },
     async execute(rawArgs: unknown, exec: ToolExec) {
       const args = requireObject(rawArgs, 'arguments')
-      // 键集合仍列 old_string/new_string/replace_all：normalizeEditRequest 会
-      // 对它们给出指向内置 edit 的清晰拒绝，而不是笼统的未知字段错误。
-      assertOnlyKeys(
-        args,
-        sandbox.confining
-          ? ['file_path', 'old_string', 'new_string', 'replace_all', 'edits', 'sandbox_permissions', 'justification']
-          : ['file_path', 'old_string', 'new_string', 'replace_all', 'edits'],
-        'arguments',
-      )
-      const { filePath, rawEdits } = normalizeEditRequest(args)
+        assertBoundedText(args, 'arguments')
+      // 顶层不再用 assertOnlyKeys 白名单拒绝：方言回收需要先看到根级散落键。
+      // normalizeEditRequest 在回收后仍会响亮拒绝声明/方言键之外的未知键，并对
+      // old_string/new_string/replace_all 给出指向内置 edit 的清晰拒绝。
+      const { filePath, rawEdits, normalizedFrom } = normalizeEditRequest(args)
       // 编辑结构在 sandbox、审批和文件 I/O 前失败；旧回放或直接调用传入的
       // 无锚点 replace 由 normalizeEditRequest 与 parseEditEntries 在此拒绝。
       parseEditEntries(rawEdits)
@@ -982,7 +1250,7 @@ function createEditTool(
       const editOptions: EditOptions = { ...options, toolName, readToolName }
       const plan = planEdits(loaded.content, rawEdits, editOptions)
       if (!plan.changed) {
-        return resultFromContent(loaded.target.displayPath, loaded.content, plan, options)
+          return resultFromContent(loaded.target.displayPath, loaded.content, plan, options, normalizedFrom)
       }
 
       const localIntent: WriteIntent = { kind: 'replaceIfVersion', version: loaded.info.version }
@@ -1002,7 +1270,7 @@ function createEditTool(
         throw remapFileError(error, policy, sandbox.confining)
       }
       ctx.emit('fs/observed', loaded.target, { kind: 'present', version: outcome.version }, exec)
-      const value = resultFromContent(loaded.target.displayPath, plan.after, plan, options)
+        const value = resultFromContent(loaded.target.displayPath, plan.after, plan, options, normalizedFrom)
       // 展示层 diff 只由实际写入的前后文本计算；失败路径不产生 presentation。
       value.presentation = { diffs: computeHunkDiffs(filePath, loaded.content, plan.after, options.hashLength) }
       return value
@@ -1034,13 +1302,13 @@ function createEditTool(
 function guidanceText(options: ResolvedConfig): string {
   if (options.zhPrompt) {
     return (
-      '用 hashline_read 后再 hashline_edit（edits）做对同一文件的多次编辑、多处原子编辑，或在字面替换因空白或行尾而脆弱时使用。edits 数组的每一项只放一个操作。' +
+      '用 hashline_read 后再 hashline_edit（edits）做对同一文件的多次编辑、多处原子编辑，或在字面替换因空白或行尾而脆弱时使用。edits 的每项是 {op, anchor…, new_text} 扁平对象，只放一个操作。' +
       '从最新输出中精确复制 LINE:HASH 锚点。哈希不匹配意味着未写入；使用错误中给出的更新锚点或重新读取。' +
       '新建文件用 write，简单唯一字面替换用内置 edit。'
     )
   }
   return (
-    'Use hashline_read followed by hashline_edit with edits for repeated edits to the same file, multi-location atomic edits, or when literal replacement is fragile because of whitespace or line endings. Put exactly one operation in each edits array element. ' +
+      'Use hashline_read followed by hashline_edit with edits for repeated edits to the same file, multi-location atomic edits, or when literal replacement is fragile because of whitespace or line endings. Each edits element is one flat {op, anchor…, new_text} object carrying exactly one operation. ' +
     'Copy LINE:HASH anchors exactly from the newest output. A hash mismatch means nothing was written; use the updated anchor in the error or read again. ' +
     'Use write for new files and the built-in edit for a simple unique literal replacement.'
   )
@@ -1077,13 +1345,13 @@ function editGuidanceText(options: ResolvedConfig): string {
   if (options.zhPrompt) {
     return (
       `使用 ${editToolName} 工具对现有 UTF-8 文本文件做严格的哈希锚定修改。` +
-      `先用 ${readToolName} 读取，再从最新输出精确复制 LINE:HASH。edits 数组的每一项只放一个 set_line、replace_lines 或 insert_after 操作；多处修改拆成多个数组项。` +
+      `先用 ${readToolName} 读取，再从最新输出精确复制 LINE:HASH。edits 的每项是扁平对象：op 取 set_line、replace_lines 或 insert_after，配 anchor（或 start_anchor+end_anchor）与 new_text；多处修改拆成多个数组项。` +
       '哈希不匹配意味着未写入；使用错误中的新锚点或重新读取。新建文件用 write。'
     )
   }
   return (
     `Use the ${editToolName} tool for strictly hash-anchored changes to existing UTF-8 text files. ` +
-    `Call ${readToolName} first and copy fresh LINE:HASH anchors exactly. Put exactly one set_line, replace_lines, or insert_after operation in each edits array element; use separate elements for separate changes. ` +
+    `Call ${readToolName} first and copy fresh LINE:HASH anchors exactly. Each edits element is a flat object: op is set_line, replace_lines, or insert_after with anchor (or start_anchor+end_anchor) and new_text; use separate elements for separate changes. ` +
     'A hash mismatch means nothing was written; use the updated anchor in the error or read again. Use write for new files.'
   )
 }
@@ -1268,13 +1536,12 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
     )
       return
 
-    let disposeRead: (() => void) | undefined
-    let disposeEdit: (() => void) | undefined
-    let disposePromptShadow: (() => void) | undefined
+    const added: Array<() => void> = []
     try {
-      disposeRead = scopedTools.register(createReadTool(ctx, current, 'edit', 'read'))
-      disposeEdit = scopedTools.register(createEditTool(ctx, current, sandbox, 'edit', 'read'))
+      added.push(scopedTools.register(createReadTool(ctx, current, 'edit', 'read')))
+      added.push(scopedTools.register(createEditTool(ctx, current, sandbox, 'edit', 'read')))
       const disposeRestriction = scopedTools.restrict?.({ deny: ['hashline_read', 'hashline_edit'] })
+      if (typeof disposeRestriction === 'function') added.push(disposeRestriction)
       // 替换开启时同样替换提示词：在 Agent 自身作用域用同名 tool:read/tool:edit
       // section 阴影内置原文（DSH system-prompt 支持 scope 层同名阴影全局层），
       // 避免“原文 + hashline 说明”重复出现。未开启提示词注入或 service 缺失时跳过。
@@ -1290,22 +1557,17 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
             disposeAll(promptDisposers)
             throw error
           }
-          disposePromptShadow = () => disposeAll(promptDisposers)
+          added.push(() => disposeAll(promptDisposers))
         }
       }
       let active = true
       replacementDisposers.set(agent, () => {
         if (!active) return
         active = false
-        disposeRestriction?.()
-        disposePromptShadow?.()
-        disposeRead?.()
-        disposeEdit?.()
+        disposeAll([...added].reverse())
       })
     } catch (error) {
-      disposeRead?.()
-      disposeEdit?.()
-      disposePromptShadow?.()
+      disposeAll([...added].reverse())
       warnReplacement(agent, error)
     }
   }

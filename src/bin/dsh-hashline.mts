@@ -32,9 +32,17 @@ function dshHome(): string {
   return process.env.DSH_HOME || join(process.env.USERPROFILE || process.env.HOME || '.', '.dsh')
 }
 
+/** Reject profile names that could escape DSH_HOME/profiles. */
+function validateProfileName(name: string): string {
+  if (name === '' || name.includes('/') || name.includes('\\') || name === '.' || name === '..' || name === 'node_modules') {
+    throw new Error(`invalid profile name ${JSON.stringify(name)}; use a non-empty profile name without path separators, dots, or "node_modules"`)
+  }
+  return name
+}
+
 /** profile 目录（默认 web，对应 `dsh web`）。 */
 function profileDir(name: string = 'web'): string {
-  return join(dshHome(), 'profiles', name)
+  return join(dshHome(), 'profiles', validateProfileName(name))
 }
 
 function manifestPath(name: string = 'web'): string {

@@ -51,11 +51,15 @@
 ## 编辑
 
 `hashline_edit` 是锚定-only 入口（参数根 schema 保持 `type: object`）：`edits` 必填且非空，
-只接受 `set_line`、`replace_lines`、`insert_after` 三种操作。简单唯一文本替换是内置 `edit`
+每项是扁平对象——`op` 取 `set_line`、`replace_lines`、`insert_after` 之一，配齐对应锚点字段
+与 `new_text`（op 与字段的匹配在执行层校验）。简单唯一文本替换是内置 `edit`
 （`old_string` / `new_string`）的职责——传入 `old_string` / `new_string` / `replace_all` 或
 `edits[].replace` 会在任何文件操作前以 `HASHLINE_INVALID_ARGUMENT` 拒绝，并指引改用内置 `edit`。
 
-所有输入都经过相同的稳定读取、版本 CAS 与写前验证。`edits.items` 使用嵌套 `oneOf` 明确每个数组项只能包含一个操作，执行器会再次校验同一规则。
+所有输入都经过相同的稳定读取、版本 CAS 与写前验证。历史嵌套变体形状
+（`{"set_line": {"anchor": ...}}`）仍被接受用于旧回放，但 schema 主形状是扁平 `op` 判别形式：
+嵌套从四层降到两层（根 → 数组 → 平铺键值），消灭模型生成深层嵌套 JSON 时频繁出现的
+字段提升、数组项物化到顶层等结构损坏。
 
 替换内置工具后的 `edit` 与全局 `hashline_edit` 是同一契约：`edits` 必填且非空，只允许锚定的
 `set_line`、`replace_lines`、`insert_after`；旧回放和绕过 schema 的直接调用传入字面替换参数时同样在文件操作前被拒绝。
@@ -66,12 +70,7 @@
 {
   "file_path": "src/example.js",
   "edits": [
-    {
-      "set_line": {
-        "anchor": "2:91aa",
-        "new_text": "  const value = 456"
-      }
-    }
+    { "op": "set_line", "anchor": "2:91aa", "new_text": "  const value = 456" }
   ]
 }
 ```
@@ -82,30 +81,31 @@
 {
   "file_path": "src/example.js",
   "edits": [
-    {
-      "replace_lines": {
-        "start_anchor": "2:91aa",
-        "end_anchor": "3:7b02",
-        "new_text": "  const value = 456\n  return value"
-      }
-    },
-    {
-      "insert_after": {
-        "anchor": "4:002d",
-        "new_text": "\nexport { test }"
-      }
-    }
+    { "op": "replace_lines", "start_anchor": "2:91aa", "end_anchor": "3:7b02", "new_text": "  const value = 456\n  return value" },
+    { "op": "insert_after", "anchor": "4:002d", "new_text": "\nexport { test }" }
   ]
 }
 ```
 
+### 方言回收（宽容但可观测）
+
+模型路由/适配器有时会把工具参数结构破坏——字段被提升到参数根（`anchor` / `new_text`
+散落在顶层）、数组项被物化为根级数字键（`"0"` / `"1"`）、变体对象只剩空壳。只要这些
+形状能**无歧义**地恢复出锚定操作，`hashline_edit` 会自动回收并在结果里注明
+`normalizedFrom`（`hoisted-fields` / `numeric-keys` / `deduped` / `top-level`），同一操作
+的多份全等影子折叠为一次写入；字段值冲突或无法归属时拒绝且不写入，错误附带收到的
+结构指纹与可直接复制的正确形状模板。回收不改变安全模型：恢复出的操作仍走同一稳定
+快照校验、重叠拒绝与版本 CAS。
+
 ## 注意事项
 
 - `old_string` / `new_string` / `replace_all` 与 `edits[].replace` 已在 0.2.0 移除；传给 `hashline_edit` 会被拒绝并指引使用内置 `edit` 做简单字面替换。适配器为未选变体物化的空哨兵（`''` / `false` / 空对象）仍被容忍忽略。
-- `edits` 的每个数组项必须是独立对象，且只包含一个操作；多个位置的修改要拆成多个数组项，不能把多个变体键塞进同一个项。
+- `edits` 的每个数组项是一个扁平对象：`op` 选择操作，`set_line`/`insert_after` 只允许 `op`、`anchor`、`new_text`，`replace_lines` 只允许 `op`、`start_anchor`、`end_anchor`、`new_text`；传入另一操作的锚点字段会以 `HASHLINE_INVALID_ARGUMENT` 拒绝。多个位置的修改拆成多个数组项。历史嵌套变体形状（`{"set_line": {...}}`）仍被接受用于旧回放。
+- 锚点分隔符推荐 `:`，直接从读取输出抄来的 `|` 也被接受并等价处理。
 - `set_line` / `replace_lines` 的空 `new_text` 表示删除；要写入一个有行尾的空白行，使用 `"\n"`。
 - `insert_after.new_text` 不允许为空。
 - 开启“替换内置读写”后，`read` 保持 Hashline 读取参数；`edit` 与全局 `hashline_edit` 是同一锚定-only 契约。
+- 读取与编辑均限制为最多 50 KiB 的 UTF-8 字节：超过限制的文件会在读取正文前拒绝；单个 `new_text`/`content` 参数也不得超过此上限。大文件请拆分读取或使用内置 `read` 工具。
 - 复制锚点必须来自**最新一次**读取输出。哈希不匹配时，若全文件恰有一行与锚点哈希一致则自动重定位到该行，否则表示未写入，应使用报错里给出的新锚点或重新读取。
 
 ## 会话呈现

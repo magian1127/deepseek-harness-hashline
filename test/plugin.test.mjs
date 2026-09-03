@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
 
 // 用 fixtures 假 profile 隔离 DSH 运行时模块（schemastery/dsh-llm），
 // 必须在 import 库模块之前设置。
@@ -356,13 +357,12 @@ test('zhPrompt=true 时提示词与工具说明中文化，工具名保持英文
   // 参数 description 中文化。
   assert.equal(harness.tools.get('hashline_read').parameters.properties.file_path.description, '要读取的路径，相对于调用会话工作区解析。')
   const editProps = harness.tools.get('hashline_edit').parameters.properties
-  assert.equal(editProps.edits.description, '必填的非空锚定编辑列表。每个数组项必须是只含 set_line、replace_lines 或 insert_after 之一的独立对象。')
-  const setLineBranch = editProps.edits.items.oneOf.find(branch => branch.required[0] === 'set_line')
-  assert.match(setLineBranch.properties.set_line.properties.anchor.description, /从 hashline_read 复制的最新 LINE:HASH 锚点/)
+  assert.equal(editProps.edits.description, '必填的非空编辑列表。每项是扁平对象：op 取 set_line、replace_lines 或 insert_after，配 anchor（或 start_anchor+end_anchor）与 new_text。')
+  assert.match(editProps.edits.items.properties.anchor.description, /从 hashline_read 复制的最新 LINE:HASH 锚点/)
   // 提示词 section 中文化，并明确每个数组项只能放一个操作。
   assert.match(harness.sections.get('tool:hashline').text, /用 hashline_read 后再 hashline_edit（edits）/)
   assert.match(harness.sections.get('tool:hashline').text, /简单唯一字面替换用内置 edit/)
-  assert.match(harness.sections.get('tool:hashline').text, /edits 数组的每一项只放一个操作/)
+  assert.match(harness.sections.get('tool:hashline').text, /edits 的每项是/)
 })
 
 test('zhPrompt=false 时提示词与工具说明保持英文', () => {
@@ -414,7 +414,7 @@ test('停用状态保留替换开关时，重新启用会立即为现有 Agent �
   assert.equal(strictEdit.source, undefined)
   assert.deepEqual(strictEdit.parameters.required, ['file_path', 'edits'])
   assert.equal(strictEdit.parameters.properties.old_string, undefined)
-  assert.deepEqual(strictEdit.parameters.properties.edits.items.oneOf.map(branch => branch.required[0]), [
+  assert.deepEqual(strictEdit.parameters.properties.edits.items.properties.op.enum, [
     'set_line',
     'replace_lines',
     'insert_after',
@@ -463,7 +463,7 @@ test('replaceBuiltinEdit 对现有 Agent 可逆遮蔽内置 read/edit', async ()
   assert.match(harness.agent.__scopedPrompt.get('tool:read').text, /LINE:HASH anchors/)
   assert.ok(!/strictly hash-anchored/.test(harness.agent.__scopedPrompt.get('tool:read').text))
   assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /strictly hash-anchored/)
-    assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /exactly one set_line, replace_lines, or insert_after/)
+      assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /Each edits element is a flat object: op is set_line, replace_lines, or insert_after/)
     // 否定句已按需求移除：替换形态不再提 old_string/new_string（上文已写明用法）。
     assert.ok(!/old_string\/new_string/.test(harness.agent.__scopedPrompt.get('tool:edit').text))
     assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /Use write for new files/)
@@ -967,31 +967,24 @@ test('无 agent 编辑在策略和 I/O 前失败', async () => {
   assert.equal(harness.policyRequests.length, 0)
 })
 
-test('编辑参数 schema 保持根级 object，并用 items.oneOf 强制一项一个操作', () => {
+test('编辑参数 schema 保持根级 object，items 为扁平 op 判别形状', () => {
   const harness = createHarness()
   apply(harness.ctx)
   const parameters = harness.tools.get('hashline_edit').parameters
-  // 模型路由要求工具参数根节点为 type: object（根级 oneOf 会被拒绝）；
-  // 嵌套 items.oneOf 让模型生成结构明确表达每项恰好一个操作；执行器仍会复验。
-  // 0.2.0 起为锚定-only 入口：edits 必填，无 old_string/new_string/replace_all。
+  // 模型路由要求工具参数根节点为 type: object；0.3.0 起 items 是扁平 op 判别
+  // 形状（根 → 数组 → 平铺键值，无嵌套对象、无 oneOf），避免深层嵌套导致的
+  // 结构化输出损坏；op 与字段匹配由执行层校验，嵌套变体形状仍被接受。
   assert.equal(parameters.type, 'object')
   assert.deepEqual(parameters.required, ['file_path', 'edits'])
   assert.equal(parameters.additionalProperties, false)
   assert.deepEqual(Object.keys(parameters.properties).sort(), ['edits', 'file_path'])
   const item = parameters.properties.edits.items
-  assert.equal(item.type, undefined)
-  assert.equal(item.oneOf.length, 3)
-  assert.deepEqual(item.oneOf.map(branch => branch.required[0]), [
-    'set_line',
-    'replace_lines',
-    'insert_after',
-  ])
-  for (const branch of item.oneOf) {
-    const [kind] = branch.required
-    assert.equal(branch.type, 'object')
-    assert.equal(branch.additionalProperties, false)
-    assert.deepEqual(Object.keys(branch.properties), [kind])
-  }
+  assert.equal(item.type, 'object')
+  assert.equal(item.oneOf, undefined)
+  assert.equal(item.additionalProperties, false)
+  assert.deepEqual(item.required, ['op', 'new_text'])
+  assert.deepEqual(Object.keys(item.properties).sort(), ['anchor', 'end_anchor', 'new_text', 'op', 'start_anchor'])
+  assert.deepEqual(item.properties.op.enum, ['set_line', 'replace_lines', 'insert_after'])
 
   // 替换模式下的 scoped edit 与全局工具形状一致（同一锚定-only schema）；
   // 文案里的 readToolName 相应换为 read。
@@ -1000,11 +993,9 @@ test('编辑参数 schema 保持根级 object，并用 items.oneOf 强制一项�
   const strictParameters = strictHarness.viewTool('edit').parameters
   assert.deepEqual(strictParameters.required, ['file_path', 'edits'])
   assert.deepEqual(Object.keys(strictParameters.properties).sort(), ['edits', 'file_path'])
-  assert.deepEqual(strictParameters.properties.edits.items.oneOf.map(branch => branch.required[0]), [
-    'set_line',
-    'replace_lines',
-    'insert_after',
-  ])
+  const strictItem = strictParameters.properties.edits.items
+  assert.deepEqual(strictItem.required, ['op', 'new_text'])
+  assert.deepEqual(strictItem.properties.op.enum, ['set_line', 'replace_lines', 'insert_after'])
 })
 
 // ---------------------------------------------------------------------------
@@ -1374,4 +1365,183 @@ test('替换模式下 scoped edit 使用 edit/read 错误名并严格拒绝无�
   })
   assert.equal(harness.resolveCalls.length, resolvesBeforeUnanchored)
   assert.equal(harness.content, 'alpha\nBETA\n')
+})
+
+// ---------------------------------------------------------------------------
+// 方言归一化：回收真实失败样本的畸形包装（顶层散落 / 数字键影子 / 项内提升）。
+// ---------------------------------------------------------------------------
+
+test('方言回收：空壳变体 + 根级散落字段（样本①）无歧义恢复', async () => {
+  const harness = createHarness({ content: 'a\nb\n' })
+  apply(harness.ctx)
+  const read = await readAnchors(harness)
+  // 模型原始样本形状：edits 项只剩空壳，anchor/new_text 散落在参数根级。
+  const result = await harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ set_line: {} }],
+    anchor: read.lines[1].anchor,
+    new_text: 'B',
+  }, harness.exec)
+  assert.equal(harness.content, 'a\nB\n')
+  assert.deepEqual(result.normalizedFrom, ['hoisted-fields'])
+  assert.equal(result.editsApplied, 1)
+})
+
+test('方言回收：数字键影子 + 项内字段提升（样本②）折叠为单次写入', async () => {
+  const harness = createHarness({ content: 'a\nb\n' })
+  apply(harness.ctx)
+  const read = await readAnchors(harness)
+  // 模型原始样本形状：edits[0] 的 new_text 被提升到项级、set_line 只剩 anchor；
+  // 同一操作又被物化为根级数字键 "0"；根级另有完整散落副本。
+  const result = await harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ new_text: 'B', set_line: { anchor: read.lines[1].anchor } }],
+    0: { new_text: 'B', set_line: { anchor: read.lines[1].anchor } },
+    new_text: 'B',
+    set_line: { anchor: read.lines[1].anchor },
+    anchor: read.lines[1].anchor,
+  }, harness.exec)
+  assert.equal(harness.content, 'a\nB\n')
+  assert.equal(harness.writeCalls.length, 1)
+  assert.equal(result.editsApplied, 1)
+  assert.ok(result.normalizedFrom.includes('numeric-keys'))
+  assert.ok(result.normalizedFrom.includes('deduped'))
+})
+
+test('方言回收：完全丢失 edits 信封的根级单操作也被接受', async () => {
+  const harness = createHarness({ content: 'a\nb\n' })
+  apply(harness.ctx)
+  const read = await readAnchors(harness)
+  const result = await harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    set_line: { anchor: read.lines[1].anchor, new_text: 'B' },
+  }, harness.exec)
+  assert.equal(harness.content, 'a\nB\n')
+  assert.ok(result.normalizedFrom.includes('top-level'))
+})
+
+test('方言回收：多处散落字段值冲突时拒绝且不写入', async () => {
+  const harness = createHarness({ content: 'a\nb\n' })
+  apply(harness.ctx)
+  const read = await readAnchors(harness)
+  await assert.rejects(harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ set_line: { anchor: read.lines[1].anchor, new_text: 'B' } }],
+    new_text: 'C',
+  }, harness.exec), error => {
+    assert.equal(error.code, 'HASHLINE_INVALID_ARGUMENT')
+    assert.match(error.message, /conflicting new_text values/)
+    return true
+  })
+  assert.equal(harness.writeCalls.length, 0)
+  assert.equal(harness.content, 'a\nb\n')
+})
+
+test('方言回收：无法恢复时错误附带结构指纹与 canonical 模板', async () => {
+  const harness = createHarness({ content: 'a\nb\n' })
+  apply(harness.ctx)
+  await assert.rejects(harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [],
+  }, harness.exec), error => {
+    assert.equal(error.code, 'HASHLINE_INVALID_ARGUMENT')
+    assert.match(error.message, /Received argument shape: top-level keys \["file_path", "edits"\]/)
+    assert.match(error.message, /Canonical shape: \{"file_path":"src\/app\.js","edits":\[\{"op":"set_line"/)
+    return true
+  })
+  assert.equal(harness.writeCalls.length, 0)
+})
+
+test('方言回收：回收成功时结果文本注明 normalized 与正确形状', async () => {
+  const harness = createHarness({ content: 'a\nb\n' })
+  apply(harness.ctx)
+  const read = await readAnchors(harness)
+  const result = await harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ set_line: {} }],
+    anchor: read.lines[1].anchor,
+    new_text: 'B',
+  }, harness.exec)
+  const rendered = harness.tools.get('hashline_edit').output.render({ file_path: 'sample.txt' }, result)
+  const text = rendered[0].text
+  assert.match(text, /normalized from a malformed shape: hoisted-fields/)
+  assert.match(text, /canonical edits item/)
+})
+
+test('方言回收：未知顶层键在回收后仍响亮拒绝', async () => {
+  const harness = createHarness({ content: 'a\nb\n' })
+  apply(harness.ctx)
+  const read = await readAnchors(harness)
+  await assert.rejects(harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ op: 'set_line', anchor: read.lines[1].anchor, new_text: 'B' }],
+    typo_field: true,
+  }, harness.exec), error => {
+    assert.equal(error.code, 'HASHLINE_INVALID_ARGUMENT')
+    assert.match(error.message, /unsupported field\(s\): typo_field/)
+    return true
+  })
+  assert.equal(harness.writeCalls.length, 0)
+})
+
+
+test('hashline_read 在 stat size 超限时于 readText 前拒绝', async () => {
+  const harness = createHarness({ content: 'a'.repeat(50 * 1024 + 1) })
+  apply(harness.ctx)
+  const tool = harness.tools.get('hashline_read')
+  await assert.rejects(tool.execute({ file_path: 'sample.txt' }, harness.exec), error => {
+    assert.equal(error.code, 'HASHLINE_FILE_TOO_LARGE')
+    return true
+  })
+})
+
+test('hashline_read 保持 readLimit 行数限制', async () => {
+  const harness = createHarness({ content: Array.from({ length: 10 }, (_, i) => `line-${i}`).join('\n') })
+  apply(harness.ctx)
+  const result = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt', limit: 2 }, harness.exec)
+  assert.equal(result.lines.length, 2)
+  assert.equal(result.totalLines, 10)
+})
+
+test('hashline_edit 拒绝超长 new_text 且不触发文件 I/O', async () => {
+  const harness = createHarness()
+  apply(harness.ctx)
+  await assert.rejects(harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ op: 'set_line', anchor: '1:aaaa', new_text: 'x'.repeat(50 * 1024 + 1) }],
+  }, harness.exec), error => {
+    assert.equal(error.code, 'HASHLINE_FILE_TOO_LARGE')
+    return true
+  })
+  assert.equal(harness.resolveCalls.length, 0)
+  assert.equal(harness.writeCalls.length, 0)
+})
+
+test('scoped prompt 第二段注册失败会回滚 deny 和替换表面', () => {
+  const harness = createHarness({ settings: { replaceBuiltinEdit: false } })
+  apply(harness.ctx)
+  const section = harness.agent.ctx.systemPrompt.section
+  harness.agent.ctx.systemPrompt.section = definition => {
+    if (definition.name === 'tool:edit') throw new Error('second prompt section failed')
+    return section(definition)
+  }
+
+  harness.updateSettings({ replaceBuiltinEdit: true })
+
+  assert.equal(harness.agent.__restrictions.length, 0)
+  assert.equal(harness.agent.__scopedTools.size, 0)
+  assert.equal(harness.agent.__scopedPrompt.size, 0)
+  assert.equal(harness.viewTool('read').source, 'tool-fs')
+  assert.equal(harness.viewTool('edit').source, 'tool-fs')
+  assert.equal(harness.viewTool('hashline_read').name, 'hashline_read')
+  assert.equal(harness.viewTool('hashline_edit').name, 'hashline_edit')
+})
+
+test('CLI rejects traversal profile names before resolving profile paths', () => {
+  const result = spawnSync(process.execPath, ['bin/dsh-hashline.mjs', 'status', '--profile', '../escape'], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
+    encoding: 'utf8',
+  })
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /invalid profile name .*non-empty profile name without path separators/)
 })

@@ -18,10 +18,13 @@
 `LINE:HASH` 联合锚点把编辑绑定到模型最近读取过的具体行内容，解决同一文件多轮修改、多处原子修改、
 CRLF/LF 或空白漂移时的机械可靠性问题。
 
-`hashline_edit` 是锚定-only 入口：`edits` 必填，只接受 `set_line`、`replace_lines`、
-`insert_after` 三种操作；简单唯一文本替换请使用内置 `edit`（`old_string` / `new_string`），
-新文件用 `write`。传入 `old_string` / `new_string` / `edits[].replace` 会在任何文件操作前被
-拒绝并明确指引改用内置 `edit`。开启“替换内置读写”后，允许编辑的智能体改用同名严格锚定的
+`hashline_edit` 是锚定-only 入口：`edits` 必填，每项是扁平对象——`op` 取 `set_line`、
+`replace_lines`、`insert_after` 之一，配 `anchor`（或 `start_anchor`+`end_anchor`）与
+`new_text`；简单唯一文本替换请使用内置 `edit`（`old_string` / `new_string`），新文件用
+`write`。传入 `old_string` / `new_string` / `edits[].replace` 会在任何文件操作前被拒绝并明确
+指引改用内置 `edit`。模型/适配器常见的畸形传参（字段被提升到参数根、数组项被物化为根级
+数字键、变体空壳）只要无歧义就会被自动回收并在结果中注明，无法恢复时报错附带结构指纹与
+正确形状模板。开启“替换内置读写”后，允许编辑的智能体改用同名严格锚定的
 `read` / `edit`，行为与全局工具完全一致。
 
 ## 功能
@@ -29,7 +32,8 @@ CRLF/LF 或空白漂移时的机械可靠性问题。
 | 能力 | 说明 |
 | --- | --- |
 | `LINE:HASH` 读取 | `LINE\|HASH  内容` 格式，默认 4 位十六进制 SHA-256 前缀；模型结果同时报告 EOL/BOM |
-| 三种锚定编辑 | `set_line`、`replace_lines`、`insert_after`；`edits` 必填且每个数组项只能包含一个操作 |
+| 三种锚定编辑 | `set_line`、`replace_lines`、`insert_after`；`edits` 每项为扁平 `{op, anchor…, new_text}` 对象，执行前校验 op 与字段匹配 |
+| 方言回收 | 顶层散落字段、数字键影子、变体空壳等无歧义畸形传参被自动恢复并在结果注明 `normalizedFrom`；冲突即拒绝且不写入 |
 | 原子批量编辑 | 一次调用全部锚点先校验、重叠先拒绝，再原子写入 |
 | 版本 CAS 保护 | 使用 DSH 文件版本防止校验后到写入前的并发覆盖 |
 | 文本保真 | 保留 UTF-8 BOM、LF/CRLF、mixed EOL 未触及区域和文件末尾换行状态 |
@@ -113,8 +117,8 @@ node bin/dsh-hashline.mjs remove --profile web
 高风险部署可在配置中提高 `hashLength`。
 
 **“替换内置读写”怎么用？** 开启后，允许编辑的智能体看到的是严格锚定的 `read` / `edit`，
-`hashline_read` / `hashline_edit` 被隐藏。每次修改先用 `read` 获取最新锚点；`edit.edits` 的每个数组项只能包含
-  一个 `set_line`、`replace_lines` 或 `insert_after`。关闭开关恢复原工具。
+`hashline_read` / `hashline_edit` 被隐藏。每次修改先用 `read` 获取最新锚点；`edit.edits` 的每项是扁平对象——`op` 取
+  `set_line`、`replace_lines` 或 `insert_after`，配 `anchor`（或 `start_anchor`+`end_anchor`）与 `new_text`。关闭开关恢复原工具。
 替换只在智能体原本能看到四个相关工具时安装，避免绕过配置限制；系统提示也在该智能体作用域内同步替换，关闭后恢复。**极简模式（minimal 预设）下不安装替换**：插件只在该智能体作用域隐藏全局 `hashline_read` / `hashline_edit`，保持“仅持久 shell + str_replace_editor”的双工具组合不被第三方能力突破；该隐藏**不依赖“替换原版工具”开关**，关闭替换后对极简 agent 同样生效。
 
 ## 开发文档

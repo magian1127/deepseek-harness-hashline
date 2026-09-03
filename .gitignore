@@ -372,4 +372,6 @@ MigrationBackup/
 .ionide/
 
 # Fody - auto-generated XML schema
-FodyWeavers.xsd
+FodyWeavers.xsd# pnpm 安装同一套依赖产生的等价 lock；本项目以 package-lock.json 为准，不入库。
+pnpm-lock.yaml
+

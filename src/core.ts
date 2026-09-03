@@ -14,11 +14,14 @@ export const DEFAULT_HASH_LENGTH = 4
 export const DEFAULT_MAX_LINE_LENGTH = 500
 export const DEFAULT_READ_LIMIT = 2000
 export const DEFAULT_CONTEXT_LINES = 2
+/** Maximum UTF-8 bytes loaded or supplied by one Hashline operation.
+ * Mirrors the host `tool-fs` read renderer's default `READ_MAX_BYTES` (50 KiB).
+ */
+export const MAX_FILE_BYTES = 50 * 1024
 
-/** 锚定编辑的三种变体名称；精确文本替换（replace）已在 0.2.0 移除。 */
+/** 锚定编辑的三种变体名称；精确文本替换（replace）已在 0.2.0 移除。0.3.0 起供扁平 op 形状复用。 */
 export type EditKind = 'set_line' | 'replace_lines' | 'insert_after'
-
-const EDIT_KINDS: readonly EditKind[] = ['set_line', 'replace_lines', 'insert_after']
+export const EDIT_KINDS: readonly EditKind[] = ['set_line', 'replace_lines', 'insert_after']
 
 /** Hashline 编辑错误码（稳定、可机器路由）。 */
 export type HashlineErrorCode =
@@ -29,6 +32,7 @@ export type HashlineErrorCode =
   | 'HASHLINE_HASH_MISMATCH'
   | 'HASHLINE_INVALID_RANGE'
   | 'HASHLINE_OVERLAPPING_EDIT'
+  | 'HASHLINE_FILE_TOO_LARGE'
 
 /** 附加到 HashlineError 上的结构化诊断信息（`details`）。 */
 export type HashlineErrorDetails = Record<string, unknown>
@@ -67,7 +71,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function requireString(value: unknown, label: string): string {
+export function requireString(value: unknown, label: string): string {
   if (typeof value !== 'string') fail('HASHLINE_INVALID_ARGUMENT', `${label} must be a string`)
   return value
 }
@@ -237,7 +241,7 @@ export function parseAnchor(
   options: AnchorOptions = {},
 ): ParsedAnchor {
   const anchor = requireString(value, 'anchor')
-  const expression = new RegExp(`^(\\d+):([0-9a-fA-F]{${hashLength}})$`)
+  const expression = new RegExp(`^(\\d+)[:|]([0-9a-fA-F]{${hashLength}})$`)
   const match = expression.exec(anchor)
   if (match === null) {
     const details: HashlineErrorDetails = { anchor }
@@ -382,8 +386,9 @@ export type ParsedEdit = SetLineEdit | ReplaceLinesEdit | InsertAfterEdit
 /** 锚定编辑：参与锚点解析与行号补全。 */
 export type AnchorEdit = SetLineEdit | ReplaceLinesEdit | InsertAfterEdit
 
-/** 编辑请求的输入形式：恰好一个变体键。 */
+/** 编辑请求的输入形式：扁平 op 形状（0.3.0 起 schema 主形状）或嵌套变体键（历史形状，仍被接受）。 */
 export type RawEdit =
+  | { op: EditKind; anchor?: unknown; start_anchor?: unknown; end_anchor?: unknown; new_text: unknown }
   | { set_line: { anchor: unknown; new_text: unknown } }
   | { replace_lines: { start_anchor: unknown; end_anchor: unknown; new_text: unknown } }
   | { insert_after: { anchor: unknown; new_text: unknown } }
@@ -398,58 +403,116 @@ export function parseEditEntries(rawEdits: RawEdit[]): ParsedEdit[] {
       fail('HASHLINE_INVALID_ARGUMENT', `edits[${order}] must be an object with exactly one variant`)
     }
     const keys = Object.keys(entry)
-    if (keys.length !== 1 || !EDIT_KINDS.includes(keys[0] as EditKind)) {
+    const variantKeys = keys.filter((key) => (EDIT_KINDS as readonly string[]).includes(key))
+    if (variantKeys.length === 1 && !keys.includes('op')) {
+      return parseNestedVariantEntry(entry, variantKeys[0] as EditKind, order)
+    }
+    if (variantKeys.length === 0 && keys.includes('op')) {
+      return parseFlatEditEntry(entry, order)
+    }
+    if (keys.includes('op')) {
       fail(
         'HASHLINE_INVALID_ARGUMENT',
-        `edits[${order}] must contain exactly one variant (${EDIT_KINDS.join(' | ')}); put each operation in its own edits array element`,
+        `edits[${order}] mixes the flat "op" field with variant key(s) [${variantKeys.join(', ')}]; use exactly one form per element`,
       )
     }
-
-    const kind = keys[0] as EditKind
-    const record = entry as Record<string, unknown>
-    const value = record[kind]
-    if (!isPlainObject(value)) {
-      fail('HASHLINE_INVALID_ARGUMENT', `edits[${order}].${kind} must be an object`)
-    }
-
-    if (kind === 'set_line') {
-      assertOnlyKeys(value, ['anchor', 'new_text'], `edits[${order}].set_line`)
-      return {
-        kind,
-        order,
-        anchor: requireString(value.anchor, `edits[${order}].set_line.anchor`),
-        newText: requireString(value.new_text, `edits[${order}].set_line.new_text`),
-      } satisfies SetLineEdit
-    }
-
-    if (kind === 'replace_lines') {
-      assertOnlyKeys(value, ['start_anchor', 'end_anchor', 'new_text'], `edits[${order}].replace_lines`)
-      return {
-        kind,
-        order,
-        startAnchor: requireString(value.start_anchor, `edits[${order}].replace_lines.start_anchor`),
-        endAnchor: requireString(value.end_anchor, `edits[${order}].replace_lines.end_anchor`),
-        newText: requireString(value.new_text, `edits[${order}].replace_lines.new_text`),
-      } satisfies ReplaceLinesEdit
-    }
-
-    if (kind === 'insert_after') {
-      assertOnlyKeys(value, ['anchor', 'new_text'], `edits[${order}].insert_after`)
-      const newText = requireString(value.new_text, `edits[${order}].insert_after.new_text`)
-      if (newText.length === 0) {
-        fail('HASHLINE_INVALID_ARGUMENT', `edits[${order}].insert_after.new_text must not be empty`)
-      }
-      return {
-        kind,
-        order,
-        anchor: requireString(value.anchor, `edits[${order}].insert_after.anchor`),
-        newText,
-      } satisfies InsertAfterEdit
-    }
-
-    // EDIT_KINDS 检查已把 kind 限定为上述三种；replace 变体已在 0.2.0 移除。
-    return fail('HASHLINE_INVALID_ARGUMENT', `edits[${order}].replace is not accepted; use the built-in edit for literal replacement`)
+    fail(
+      'HASHLINE_INVALID_ARGUMENT',
+      `edits[${order}] must contain exactly one variant (${EDIT_KINDS.join(' | ')}); put each operation in its own edits array element`,
+    )
   })
+}
+
+/** 扁平形状允许的字段按 op 匹配（0.3.0 起 schema 主形状）。 */
+const FLAT_EDIT_KEYS: Readonly<Record<EditKind, readonly string[]>> = {
+  set_line: ['op', 'anchor', 'new_text'],
+  replace_lines: ['op', 'start_anchor', 'end_anchor', 'new_text'],
+  insert_after: ['op', 'anchor', 'new_text'],
+}
+
+/** 解析扁平形状：`{"op":"set_line","anchor":"42:f7a9","new_text":"..."}`。 */
+function parseFlatEditEntry(entry: Record<string, unknown>, order: number): ParsedEdit {
+  const label = `edits[${order}]`
+  const op = entry.op
+  if (typeof op !== 'string' || !(EDIT_KINDS as readonly string[]).includes(op)) {
+    fail('HASHLINE_INVALID_ARGUMENT', `${label}.op must be one of ${EDIT_KINDS.join(' | ')}`)
+  }
+  const kind = op as EditKind
+  assertOnlyKeys(entry, FLAT_EDIT_KEYS[kind], label)
+  if (kind === 'set_line') {
+    return {
+      kind,
+      order,
+      anchor: requireString(entry.anchor, `${label}.anchor`),
+      newText: requireString(entry.new_text, `${label}.new_text`),
+    } satisfies SetLineEdit
+  }
+  if (kind === 'replace_lines') {
+    return {
+      kind,
+      order,
+      startAnchor: requireString(entry.start_anchor, `${label}.start_anchor`),
+      endAnchor: requireString(entry.end_anchor, `${label}.end_anchor`),
+      newText: requireString(entry.new_text, `${label}.new_text`),
+    } satisfies ReplaceLinesEdit
+  }
+  const insertText = requireString(entry.new_text, `${label}.new_text`)
+  if (insertText.length === 0) {
+    fail('HASHLINE_INVALID_ARGUMENT', `${label}.new_text must not be empty`)
+  }
+  return {
+    kind,
+    order,
+    anchor: requireString(entry.anchor, `${label}.anchor`),
+    newText: insertText,
+  } satisfies InsertAfterEdit
+}
+
+/** 解析嵌套变体形状（历史/回放形状）：`{"set_line":{"anchor":"...","new_text":"..."}}`。 */
+function parseNestedVariantEntry(entry: Record<string, unknown>, kind: EditKind, order: number): ParsedEdit {
+  assertOnlyKeys(entry, [kind], `edits[${order}]`)
+  const value = entry[kind]
+  if (!isPlainObject(value)) {
+    fail('HASHLINE_INVALID_ARGUMENT', `edits[${order}].${kind} must be an object`)
+  }
+
+  if (kind === 'set_line') {
+    assertOnlyKeys(value, ['anchor', 'new_text'], `edits[${order}].set_line`)
+    return {
+      kind,
+      order,
+      anchor: requireString(value.anchor, `edits[${order}].set_line.anchor`),
+      newText: requireString(value.new_text, `edits[${order}].set_line.new_text`),
+    } satisfies SetLineEdit
+  }
+
+  if (kind === 'replace_lines') {
+    assertOnlyKeys(value, ['start_anchor', 'end_anchor', 'new_text'], `edits[${order}].replace_lines`)
+    return {
+      kind,
+      order,
+      startAnchor: requireString(value.start_anchor, `edits[${order}].replace_lines.start_anchor`),
+      endAnchor: requireString(value.end_anchor, `edits[${order}].replace_lines.end_anchor`),
+      newText: requireString(value.new_text, `edits[${order}].replace_lines.new_text`),
+    } satisfies ReplaceLinesEdit
+  }
+
+  if (kind === 'insert_after') {
+    assertOnlyKeys(value, ['anchor', 'new_text'], `edits[${order}].insert_after`)
+    const newText = requireString(value.new_text, `edits[${order}].insert_after.new_text`)
+    if (newText.length === 0) {
+      fail('HASHLINE_INVALID_ARGUMENT', `edits[${order}].insert_after.new_text must not be empty`)
+    }
+    return {
+      kind,
+      order,
+      anchor: requireString(value.anchor, `edits[${order}].insert_after.anchor`),
+      newText,
+    } satisfies InsertAfterEdit
+  }
+
+  // EDIT_KINDS 检查已把 kind 限定为上述三种；replace 变体已在 0.2.0 移除。
+  return fail('HASHLINE_INVALID_ARGUMENT', `edits[${order}].replace is not accepted; use the built-in edit for literal replacement`)
 }
 
 /**

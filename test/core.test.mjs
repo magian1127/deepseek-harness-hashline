@@ -270,3 +270,65 @@ test('无效锚点报错回显附近真实锚点', () => {
     return true
   })
 })
+
+
+test('扁平 op 形状：三种操作与嵌套形状等价解析', () => {
+  const content = 'alpha\nbeta\ngamma\n'
+  assert.equal(apply(content, [
+    { op: 'set_line', anchor: anchor(content, 2), new_text: 'BETA' },
+  ]), 'alpha\nBETA\ngamma\n')
+  assert.equal(apply(content, [
+    { op: 'replace_lines', start_anchor: anchor(content, 1), end_anchor: anchor(content, 2), new_text: 'A2\nB2' },
+  ]), 'A2\nB2\ngamma\n')
+  assert.equal(apply(content, [
+    { op: 'insert_after', anchor: anchor(content, 2), new_text: 'INSERTED' },
+  ]), 'alpha\nbeta\nINSERTED\ngamma\n')
+  // 扁平与嵌套可在同一数组中混用（旧回放与新形状共存）。
+  assert.equal(apply(content, [
+    { op: 'set_line', anchor: anchor(content, 1), new_text: 'A' },
+    { set_line: { anchor: anchor(content, 3), new_text: 'G' } },
+  ]), 'A\nbeta\nG\n')
+})
+
+test('扁平 op 形状：非法 op 与缺字段在写入前拒绝', () => {
+  const content = 'alpha\n'
+  expectCode(() => apply(content, [
+    { op: 'delete_line', anchor: anchor(content, 1), new_text: 'x' },
+  ]), 'HASHLINE_INVALID_ARGUMENT')
+  expectCode(() => apply(content, [
+    { op: 'set_line', new_text: 'x' },
+  ]), 'HASHLINE_INVALID_ARGUMENT')
+  expectCode(() => apply(content, [
+    { op: 'replace_lines', start_anchor: anchor(content, 1), new_text: 'x' },
+  ]), 'HASHLINE_INVALID_ARGUMENT')
+  expectCode(() => apply(content, [
+    { op: 'insert_after', anchor: anchor(content, 1), new_text: '' },
+  ]), 'HASHLINE_INVALID_ARGUMENT')
+  // op 与变体键混用是歧义形状，拒绝。
+  expectCode(() => apply(content, [
+    { op: 'set_line', set_line: { anchor: anchor(content, 1), new_text: 'x' } },
+  ]), 'HASHLINE_INVALID_ARGUMENT')
+})
+
+test('锚点接受显示分隔符 | 并与 : 等价', () => {
+  const content = 'alpha\nbeta\n'
+  const pipeAnchor = anchor(content, 2).replace(':', '|')
+  assert.equal(apply(content, [
+    { op: 'set_line', anchor: pipeAnchor, new_text: 'BETA' },
+  ]), 'alpha\nBETA\n')
+})
+
+test('扁平 op 形状：拒绝另一操作的多余锚点字段', () => {
+  const content = 'alpha\nbeta\n'
+  for (const entry of [
+    { op: 'set_line', anchor: anchor(content, 1), start_anchor: anchor(content, 1), new_text: 'ALPHA' },
+    { op: 'insert_after', anchor: anchor(content, 1), end_anchor: anchor(content, 1), new_text: 'after' },
+    { op: 'replace_lines', anchor: anchor(content, 1), start_anchor: anchor(content, 1), end_anchor: anchor(content, 2), new_text: 'ALPHA\nBETA' },
+  ]) {
+    assert.throws(() => apply(content, [entry]), error => {
+      assert.equal(error.code, 'HASHLINE_INVALID_ARGUMENT')
+      assert.match(error.message, /unsupported field/)
+      return true
+    })
+  }
+})
