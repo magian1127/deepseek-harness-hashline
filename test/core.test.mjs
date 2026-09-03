@@ -332,3 +332,16 @@ test('扁平 op 形状：拒绝另一操作的多余锚点字段', () => {
     })
   }
 })
+
+test('扁平 op 形状：另一操作锚点字段的 null 占位被忽略；str_replace 家族任何值拒绝', () => {
+  const content = 'alpha\nbeta\n'
+  assert.equal(apply(content, [
+    { op: 'set_line', anchor: anchor(content, 1), start_anchor: null, end_anchor: null, new_text: 'ALPHA' },
+  ]), 'ALPHA\nbeta\n')
+  assert.equal(apply(content, [
+    { op: 'insert_after', anchor: anchor(content, 1), end_anchor: null, new_text: 'after' },
+  ]), 'alpha\nafter\nbeta\n')
+  assert.throws(() => apply(content, [
+    { op: 'set_line', anchor: anchor(content, 1), old_string: null, new_text: 'ALPHA' },
+  ]), error => error.code === 'HASHLINE_INVALID_ARGUMENT')
+})

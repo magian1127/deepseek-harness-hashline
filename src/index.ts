@@ -325,7 +325,9 @@ function assertBoundedText(value: unknown, label = 'new_text'): void {
 }
 
 function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
-  const extras = Object.keys(value).filter((key) => !allowed.includes(key))
+  // 值为 null 的未知键是「当前操作未使用字段」的占位（对齐官方 v0.1.2 起内置
+  // edit 的 null 占位语义），忽略；非 null 的未知键仍响亮拒绝。
+  const extras = Object.keys(value).filter((key) => !allowed.includes(key) && value[key] !== null)
   if (extras.length > 0) invalidArgument(`${label} contains unsupported field(s): ${extras.join(', ')}`)
 }
 
@@ -768,9 +770,9 @@ const RECOVERABLE_KEYS: readonly string[] = [
   ...EDIT_KINDS,
 ]
 
-/** 适配器物化的精确空哨兵（'' / false / undefined / 全空字段对象）。 */
+/** 适配器物化的精确空哨兵（'' / false / undefined / null / 全空字段对象）。 */
 function isEmptySentinel(value: unknown): boolean {
-  if (value === undefined || value === null) return false
+  if (value === undefined || value === null) return true
   if (typeof value === 'string') return value === ''
   if (typeof value === 'boolean') return value === false
   if (typeof value !== 'object' || Array.isArray(value)) return false
@@ -847,12 +849,13 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function normalizeEditRequest(args: Record<string, unknown>): NormalizedEditRequest {
   const filePath = requirePath(args.file_path)
-  // 空哨兵（'' / false / undefined）是某些适配器对 schema 可选字段的物化，
-  // 忽略；任何非空 native 值都被拒绝并引导使用内置 edit。
+  // 空哨兵（'' / false / undefined / null）是某些适配器对 schema 可选字段的物化
+  // （null 对齐官方 v0.1.2 起对未使用字段 null 占位的接受），忽略；任何非哨兵
+  // native 值都被拒绝并引导使用内置 edit。
   const hasNativePayload =
-    (args.old_string !== undefined && args.old_string !== '') ||
-    (args.new_string !== undefined && args.new_string !== '') ||
-    (args.replace_all !== undefined && args.replace_all !== false)
+    (args.old_string !== undefined && !isEmptySentinel(args.old_string)) ||
+    (args.new_string !== undefined && !isEmptySentinel(args.new_string)) ||
+    (args.replace_all !== undefined && !isEmptySentinel(args.replace_all))
   if (hasNativePayload) {
     invalidArgument(
       'this tool only accepts LINE:HASH-anchored edits; use the built-in edit for old_string/new_string literal replacement',
@@ -1144,15 +1147,15 @@ function createReadTool(
     isConcurrencySafe: () => true,
     async execute(rawArgs: unknown, exec: ToolExec) {
       const args = requireObject(rawArgs, 'arguments')
-      assertOnlyKeys(args, ['file_path', 'offset', 'limit'], 'arguments')
-      const filePath = requirePath(args.file_path)
-      const offset = args.offset === undefined ? 1 : positiveInteger(args.offset, 'offset')
-      const limit = args.limit === undefined ? options.readLimit : positiveInteger(args.limit, 'limit')
+        assertOnlyKeys(args, ['file_path', 'offset', 'limit'], 'arguments')
+        const filePath = requirePath(args.file_path)
+        const offset = isEmptySentinel(args.offset) ? 1 : positiveInteger(args.offset, 'offset')
+        const limit = isEmptySentinel(args.limit) ? options.readLimit : positiveInteger(args.limit, 'limit')
       if (limit > options.readLimit) invalidArgument(`limit must not exceed ${options.readLimit}`)
 
       const loaded = await loadStableFile(ctx, exec, filePath, undefined, {
         // explicit offset/limit is a windowed read; the reply stays bounded by readLimit
-        allowLargeFile: args.offset !== undefined || args.limit !== undefined,
+          allowLargeFile: !isEmptySentinel(args.offset) || !isEmptySentinel(args.limit),
       })
       const file = splitTextFile(loaded.content)
       if (file.lines.length > 0 && offset > file.lines.length) {

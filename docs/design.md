@@ -15,7 +15,7 @@ stale read，并把多处修改作为一个原子请求处理。它不判断代�
 - `hashline_edit` 是锚定-only 入口（0.2.0 起）：`edits` 必填且非空，只含 `set_line` / `replace_lines` /
   `insert_after`。简单唯一字面替换是内置 `edit` 的职责；`old_string` / `new_string` / `replace_all`
   与 `edits[].replace` 在 execute 内（sandbox、审批与文件 I/O 之前）被拒绝并指引内置 `edit`，仅容忍
-  适配器物化的精确空哨兵。参数根 schema 保持 `type: "object"`（真实模型路由会拒绝无 `type` 的根级
+  适配器物化的精确空哨兵（`''` / `false` / 空对象，自官方 DSH v0.1.2 起含未使用字段的 `null` 占位）。参数根 schema 保持 `type: "object"`（真实模型路由会拒绝无 `type` 的根级
   oneOf）。0.3.0 起 `edits.items` 改为**扁平 op 判别形状**（`{op, anchor?, start_anchor?, end_anchor?,
   new_text}`，嵌套四层降为两层、无 oneOf 分支）——深层嵌套/oneOf 是模型结构化输出的已知弱点，
   实测失败样本均为「字段提升到参数根、数组项物化为根级数字键、变体空壳」等层级损坏，扁平形状

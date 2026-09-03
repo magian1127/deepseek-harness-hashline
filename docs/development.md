@@ -20,7 +20,7 @@
 
 ## 环境要求
 
-- DeepSeek Harness ≥ 0.1.2-alpha.1
+- DeepSeek Harness ≥ 0.1.2-rc.1
 - Node.js `^22.19.0 || >=24.0.0`
 - 网页配置卡片要求 DSH 包含 `settings.register(..., { exposeToClients: true })` 支持，以及按 `hashline`
   namespace 注册的 `settings.plugin.item` keyed slot；更旧的 rc 版本只能运行 Host 工具，不能保证网页配置卡片可用。

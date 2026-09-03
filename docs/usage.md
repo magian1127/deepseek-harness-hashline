@@ -99,8 +99,8 @@
 
 ## 注意事项
 
-- `old_string` / `new_string` / `replace_all` 与 `edits[].replace` 已在 0.2.0 移除；传给 `hashline_edit` 会被拒绝并指引使用内置 `edit` 做简单字面替换。适配器为未选变体物化的空哨兵（`''` / `false` / 空对象）仍被容忍忽略。
-- `edits` 的每个数组项是一个扁平对象：`op` 选择操作，`set_line`/`insert_after` 只允许 `op`、`anchor`、`new_text`，`replace_lines` 只允许 `op`、`start_anchor`、`end_anchor`、`new_text`；传入另一操作的锚点字段会以 `HASHLINE_INVALID_ARGUMENT` 拒绝。多个位置的修改拆成多个数组项。历史嵌套变体形状（`{"set_line": {...}}`）仍被接受用于旧回放。
+- `old_string` / `new_string` / `replace_all` 与 `edits[].replace` 已在 0.2.0 移除；传给 `hashline_edit` 的实际载荷会被拒绝并指引使用内置 `edit` 做简单字面替换。适配器为未选变体物化的空哨兵（`''` / `false` / 空对象）仍被容忍忽略；自官方 DSH v0.1.2 起，「当前操作未使用字段」的 `null` 占位（含根级 str_replace 字段、跨 op 锚点字段与 `hashline_read` 的 `offset`/`limit`）同样按未提供处理。
+- `edits` 的每个数组项是一个扁平对象：`op` 选择操作，`set_line`/`insert_after` 只允许 `op`、`anchor`、`new_text`，`replace_lines` 只允许 `op`、`start_anchor`、`end_anchor`、`new_text`；传入另一操作的锚点字段（非 `null`）会以 `HASHLINE_INVALID_ARGUMENT` 拒绝，`null` 占位被忽略。多个位置的修改拆成多个数组项。历史嵌套变体形状（`{"set_line": {...}}`）仍被接受用于旧回放。
 - 锚点分隔符推荐 `:`，直接从读取输出抄来的 `|` 也被接受并等价处理。
 - `set_line` / `replace_lines` 的空 `new_text` 表示删除；要写入一个有行尾的空白行，使用 `"\n"`。
 - `insert_after.new_text` 不允许为空。

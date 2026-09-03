@@ -1126,6 +1126,28 @@ test('hashline_edit 忽略适配器为未选变体物化的空哨兵', async () 
   })
 })
 
+test('hashline_edit 忽略未使用字段的 null 占位（对齐官方 v0.1.2）', async () => {
+  const harness = createHarness({ content: 'alpha\nbeta = 2\n' })
+  apply(harness.ctx)
+  const read = await readAnchors(harness)
+  await harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    old_string: null,
+    new_string: null,
+    replace_all: null,
+    edits: [{ op: 'set_line', anchor: read.lines[1].anchor, start_anchor: null, end_anchor: null, new_text: 'beta = 3' }],
+  }, harness.exec)
+  assert.equal(harness.content, 'alpha\nbeta = 3\n')
+
+  // 项级 replace 键的 null 占位同样按空哨兵忽略；非 null 载荷仍被既有用例拒绝。
+  const second = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt' }, harness.exec)
+  await harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ op: 'set_line', anchor: second.lines[1].anchor, new_text: 'beta = 4', replace: null }],
+  }, harness.exec)
+  assert.equal(harness.content, 'alpha\nbeta = 4\n')
+})
+
 test('hashline_edit 拒绝混合或缺失的两种输入', async () => {
   const harness = createHarness({ content: 'a\n', sandboxMode: 'workspace-write' })
   apply(harness.ctx)
@@ -1513,6 +1535,15 @@ test('hashline_read 显式 offset 窗口读取超限多行文件并返回锚点'
   assert.equal(result.totalLines, 600)
   assert.equal(result.lines.length, 2)
   assert.match(result.lines[0].anchor, /^3:/)
+})
+
+test('hashline_read 把 offset/limit 的 null 占位按未提供处理', async () => {
+  const harness = createHarness({ content: 'a\nb\nc\n' })
+  apply(harness.ctx)
+  const result = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt', offset: null, limit: null }, harness.exec)
+  assert.equal(result.totalLines, 3)
+  assert.equal(result.lines.length, 3)
+  assert.match(result.lines[0].anchor, /^1:/)
 })
 
 test('hashline_edit 可编辑超限文件（窗口锚点 + CAS 写入）', async () => {

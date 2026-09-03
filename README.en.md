@@ -10,13 +10,13 @@
 
 <p align="center">
   <img alt="Status Experimental" src="https://img.shields.io/badge/Status-Experimental-ff6b6b">
-  <img alt="Version 0.2.1" src="https://img.shields.io/badge/Version-0.2.1-5965d8">
+  <img alt="Version 0.3.1" src="https://img.shields.io/badge/Version-0.3.1-5965d8">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-3b7a57">
 </p>
 
 **DeepSeek Harness hash-anchored file editing plugin**: provides `hashline_read` and `hashline_edit`, binding edits to the exact lines most recently read by the model through `LINE:HASH` anchors. This helps detect stale reads, supports multiple edits in one request, and makes file changes mechanically reliable.
 
-`hashline_edit` is an anchored-only surface: `edits` is required and every element is a flat object — `op` is `set_line`, `replace_lines`, or `insert_after`, with `anchor` (or `start_anchor`+`end_anchor`) and `new_text`. Use the built-in `edit` (`old_string` / `new_string`) for a simple unique literal replacement and `write` for new files. Passing `old_string` / `new_string` / `edits[].replace` is rejected before any file access with guidance toward the built-in `edit`. Malformed argument wrappers commonly produced by models/adapters (fields hoisted to the argument root, array items materialized as top-level numeric keys, empty variant shells) are recovered automatically whenever the recovery is unambiguous and noted in the result; unrecoverable requests fail with a structural fingerprint and a canonical shape template. When **Replace built-in read/edit** is enabled, allowed agents instead receive strict `read` / `edit` surfaces with exactly the same anchored-only contract.
+`hashline_edit` is an anchored-only surface: `edits` is required and every element is a flat object — `op` is `set_line`, `replace_lines`, or `insert_after`, with `anchor` (or `start_anchor`+`end_anchor`) and `new_text`. Use the built-in `edit` (`old_string` / `new_string`) for a simple unique literal replacement and `write` for new files. Passing an actual `old_string` / `new_string` / `edits[].replace` payload is rejected before any file access with guidance toward the built-in `edit` (aligned with DSH v0.1.2: `null` placeholders for fields unused by the current operation are treated as absent).
 
 ## Features
 
@@ -35,7 +35,7 @@
 
 ## Requirements
 
-- DeepSeek Harness ≥ 0.1.2-alpha.1, using the `web` profile
+- DeepSeek Harness ≥ 0.1.2-rc.1, using the `web` profile
 - Node.js `^22.19.0 || >=24.0.0`
 - The web settings card also requires DSH support for `settings.register(..., { exposeToClients: true })`
 

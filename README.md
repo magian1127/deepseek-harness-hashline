@@ -10,7 +10,7 @@
 
 <p align="center">
   <img alt="状态 测试中" src="https://img.shields.io/badge/状态-测试中-ff6b6b">
-  <img alt="版本 0.2.1" src="https://img.shields.io/badge/版本-0.2.1-5965d8">
+  <img alt="版本 0.3.1" src="https://img.shields.io/badge/版本-0.3.1-5965d8">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-3b7a57">
 </p>
 
@@ -21,8 +21,8 @@ CRLF/LF 或空白漂移时的机械可靠性问题。
 `hashline_edit` 是锚定-only 入口：`edits` 必填，每项是扁平对象——`op` 取 `set_line`、
 `replace_lines`、`insert_after` 之一，配 `anchor`（或 `start_anchor`+`end_anchor`）与
 `new_text`；简单唯一文本替换请使用内置 `edit`（`old_string` / `new_string`），新文件用
-`write`。传入 `old_string` / `new_string` / `edits[].replace` 会在任何文件操作前被拒绝并明确
-指引改用内置 `edit`。模型/适配器常见的畸形传参（字段被提升到参数根、数组项被物化为根级
+`write`。传入 `old_string` / `new_string` / `edits[].replace` 的实际载荷会在任何文件操作前被拒绝并明确
+指引改用内置 `edit`（对齐官方 v0.1.2：未使用字段的 `null` 占位按未提供忽略）。模型/适配器常见的畸形传参（字段被提升到参数根、数组项被物化为根级
 数字键、变体空壳）只要无歧义就会被自动回收并在结果中注明，无法恢复时报错附带结构指纹与
 正确形状模板。开启“替换内置读写”后，允许编辑的智能体改用同名严格锚定的
 `read` / `edit`，行为与全局工具完全一致。
@@ -44,7 +44,7 @@ CRLF/LF 或空白漂移时的机械可靠性问题。
 
 ## 环境要求
 
-- DeepSeek Harness ≥ 0.1.2-alpha.1，默认 profile 为 `web`
+- DeepSeek Harness ≥ 0.1.2-rc.1，默认 profile 为 `web`
 - Node.js `^22.19.0 || >=24.0.0`
 - 网页配置卡片还要求 DSH 包含 `settings.register(..., { exposeToClients: true })` 支持
 

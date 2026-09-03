@@ -76,12 +76,21 @@ export function requireString(value: unknown, label: string): string {
   return value
 }
 
-function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
-  const extras = Object.keys(value).filter((key) => !allowed.includes(key))
-  if (extras.length > 0) {
-    fail('HASHLINE_INVALID_ARGUMENT', `${label} contains unsupported field(s): ${extras.join(', ')}`)
+  /** str_replace 家族键名：任何值（含 null 占位）都在项级响亮拒绝，维持锚定契约边界。 */
+  const STR_REPLACE_KEYS: readonly string[] = ['old_string', 'new_string', 'replace_all', 'replace']
+
+  function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
+    // 值为 null 的未知键是「当前操作未使用字段」的占位（对齐官方 v0.1.2 起内置
+    // edit 的 null 占位语义），忽略；str_replace 家族键名仍任何值拒绝。
+    const extras = Object.keys(value).filter((key) => {
+      if (allowed.includes(key)) return false
+      if (STR_REPLACE_KEYS.includes(key)) return true
+      return value[key] !== null
+    })
+    if (extras.length > 0) {
+      fail('HASHLINE_INVALID_ARGUMENT', `${label} contains unsupported field(s): ${extras.join(', ')}`)
+    }
   }
-}
 
 export function hashText(value: string, length: number = DEFAULT_HASH_LENGTH): string {
   if (!Number.isInteger(length) || length < 3 || length > 16) {
