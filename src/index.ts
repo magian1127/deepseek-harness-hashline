@@ -12,6 +12,7 @@ import {
   EDIT_KINDS,
   HashlineError,
   requireString,
+  messageText,
   lineRecord,
   planEdits,
   parseEditEntries,
@@ -20,6 +21,7 @@ import {
   type EditKind,
   type EditOptions,
   type EditPlan,
+  type HashlineErrorCode,
   type HashlineErrorDetails,
   type LineRecord,
   type RawEdit,
@@ -68,12 +70,12 @@ export function createConfigSchema(z: SchemaFactory): unknown {
 const SETTINGS_NAMESPACE = 'hashline'
 
 function hashlineError(
-  code: string,
+  code: HashlineErrorCode,
   message: string,
   details?: HashlineErrorDetails,
   options?: ErrorOptions,
 ): HashlineError {
-  return new HashlineError(code as never, message, details, options)
+  return new HashlineError(code, message, details, options)
 }
 
 const ESCALATION_TARGETS = ['workspace-write', 'danger-full-access'] as const
@@ -284,29 +286,31 @@ function invalidArgument(message: string): never {
   throw new HashlineError('HASHLINE_INVALID_ARGUMENT', message)
 }
 
-function positiveInteger(value: unknown, label: string): number {
-  if (!Number.isInteger(value) || (value as number) < 1) invalidArgument(`${label} must be a positive integer`)
+function positiveInteger(value: unknown, label: string, zhPrompt?: boolean): number {
+  if (!Number.isInteger(value) || (value as number) < 1) {
+    invalidArgument(messageText(zhPrompt, `${label} must be a positive integer`, `${label} 必须是正整数`))
+  }
   return value as number
 }
 
-function requireObject(value: unknown, label: string): Record<string, unknown> {
+function requireObject(value: unknown, label: string, zhPrompt?: boolean): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    invalidArgument(`${label} must be an object`)
+    invalidArgument(messageText(zhPrompt, `${label} must be an object`, `${label} 必须是对象`))
   }
   return value as Record<string, unknown>
 }
 
-function requirePath(value: unknown): string {
+function requirePath(value: unknown, zhPrompt?: boolean): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
-    invalidArgument('file_path must be a non-empty string')
+    invalidArgument(messageText(zhPrompt, 'file_path must be a non-empty string', 'file_path 必须是非空字符串'))
   }
   return value
 }
 
-function assertBoundedText(value: unknown, label = 'new_text'): void {
+function assertBoundedText(value: unknown, label = 'new_text', zhPrompt?: boolean): void {
   if (typeof value !== 'object' || value === null) return
   if (Array.isArray(value)) {
-    value.forEach((item, index) => assertBoundedText(item, `${label}[${index}]`))
+    value.forEach((item, index) => assertBoundedText(item, `${label}[${index}]`, zhPrompt))
     return
   }
   for (const [key, item] of Object.entries(value)) {
@@ -315,20 +319,22 @@ function assertBoundedText(value: unknown, label = 'new_text'): void {
       if (size > MAX_FILE_BYTES) {
         throw hashlineError(
           'HASHLINE_FILE_TOO_LARGE',
-          `${key} is too large (${size} bytes; limit ${MAX_FILE_BYTES}); split the edit into smaller operations`,
+          messageText(zhPrompt,
+            `${key} is too large (${size} bytes; limit ${MAX_FILE_BYTES}); split the edit into smaller operations`,
+            `${key} 过大(${size} 字节;上限 ${MAX_FILE_BYTES});请拆分为更小的操作`),
           { field: `${label}.${key}`, size, maxBytes: MAX_FILE_BYTES },
         )
       }
     }
-    assertBoundedText(item, `${label}.${key}`)
+    assertBoundedText(item, `${label}.${key}`, zhPrompt)
   }
 }
 
-function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
+function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string[], label: string, zhPrompt?: boolean): void {
   // 值为 null 的未知键是「当前操作未使用字段」的占位（对齐官方 v0.1.2 起内置
   // edit 的 null 占位语义），忽略；非 null 的未知键仍响亮拒绝。
   const extras = Object.keys(value).filter((key) => !allowed.includes(key) && value[key] !== null)
-  if (extras.length > 0) invalidArgument(`${label} contains unsupported field(s): ${extras.join(', ')}`)
+  if (extras.length > 0) invalidArgument(messageText(zhPrompt, `${label} contains unsupported field(s): ${extras.join(', ')}`, `${label} 含不支持的键: ${extras.join(', ')}`))
 }
 
 function resolveConfig(config: Record<string, unknown> = {}): ResolvedConfig {
@@ -525,45 +531,51 @@ async function loadStableFile(
   exec: ToolExec,
   filePath: string,
   workspaceRoot?: string,
-  loadOptions?: { allowLargeFile?: boolean },
+  loadOptions?: { allowLargeFile?: boolean; zhPrompt?: boolean },
 ): Promise<StableFile> {
   const target = await ctx.fs.resolve(filePath, resolveOptions(exec, workspaceRoot))
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const before = await ctx.fs.stat(target, exec.signal)
     if (before === undefined) {
       ctx.emit('fs/observed', target, { kind: 'absent' }, exec)
-      throw hashlineError('HASHLINE_FILE_NOT_FOUND', `file not found: ${target.displayPath}`)
+        throw hashlineError('HASHLINE_FILE_NOT_FOUND', messageText(loadOptions?.zhPrompt, `file not found: ${target.displayPath}`, `文件不存在: ${target.displayPath}`))
     }
     if (before.type !== 'file') {
-      throw hashlineError('HASHLINE_NOT_A_FILE', `not a regular file: ${target.displayPath}`)
+        throw hashlineError('HASHLINE_NOT_A_FILE', messageText(loadOptions?.zhPrompt, `not a regular file: ${target.displayPath}`, `不是常规文件: ${target.displayPath}`))
     }
       if (!loadOptions?.allowLargeFile && before.size !== undefined && before.size > MAX_FILE_BYTES) {
-        throw hashlineError(
-          'HASHLINE_FILE_TOO_LARGE',
-          `file is too large for hashline (${before.size} bytes; limit ${MAX_FILE_BYTES}); re-read with offset and limit to fetch a bounded window`,
-          { size: before.size, maxBytes: MAX_FILE_BYTES },
-        )
-      }
+          throw hashlineError(
+            'HASHLINE_FILE_TOO_LARGE',
+            messageText(loadOptions?.zhPrompt,
+              `file is too large for hashline (${before.size} bytes; limit ${MAX_FILE_BYTES}); re-read with offset and limit to fetch a bounded window`,
+              `文件超出 hashline 大小限制(${before.size} 字节;上限 ${MAX_FILE_BYTES});请用 offset 和 limit 重新读取一个有界窗口`),
+            { size: before.size, maxBytes: MAX_FILE_BYTES },
+          )
+        }
 
       const content = await ctx.fs.readText(target, exec.signal)
       const contentBytes = Buffer.byteLength(content, 'utf8')
       if (!loadOptions?.allowLargeFile && contentBytes > MAX_FILE_BYTES) {
-        throw hashlineError(
-          'HASHLINE_FILE_TOO_LARGE',
-          `file is too large for hashline (${contentBytes} bytes; limit ${MAX_FILE_BYTES}); re-read with offset and limit to fetch a bounded window`,
-          { size: contentBytes, maxBytes: MAX_FILE_BYTES },
-        )
-      }
+          throw hashlineError(
+            'HASHLINE_FILE_TOO_LARGE',
+            messageText(loadOptions?.zhPrompt,
+              `file is too large for hashline (${contentBytes} bytes; limit ${MAX_FILE_BYTES}); re-read with offset and limit to fetch a bounded window`,
+              `文件超出 hashline 大小限制(${contentBytes} 字节;上限 ${MAX_FILE_BYTES});请用 offset 和 limit 重新读取一个有界窗口`),
+            { size: contentBytes, maxBytes: MAX_FILE_BYTES },
+          )
+        }
     const after = await ctx.fs.stat(target, exec.signal)
     if (after !== undefined && after.type === 'file' && after.version === before.version) {
       return { target, info: after, content }
     }
   }
 
-  throw hashlineError(
-    'HASHLINE_FILE_CHANGED_DURING_READ',
-    `file changed while hashline was reading ${target.displayPath}; retry the operation`,
-  )
+    throw hashlineError(
+      'HASHLINE_FILE_CHANGED_DURING_READ',
+      messageText(loadOptions?.zhPrompt,
+        `file changed while hashline was reading ${target.displayPath}; retry the operation`,
+        `hashline 读取 ${target.displayPath} 期间文件发生变化;请重试该操作`),
+    )
 }
 
 function formatLine(record: LineRecord): string {
@@ -576,19 +588,19 @@ function renderRead(value: {
   offset: number
   lines: LineRecord[]
   eol: string
-  bom: boolean
-}): unknown[] {
-  // 模型-facing envelope 使用 `LINE|HASH  内容`；UI 由 presentationMeta 保留独立
-  // number/hash/text，客户端把 `LINE|HASH` 作为 gutter chrome 渲染。
-  const displayLines = value.lines.map(line => ({
-    number: line.number,
-    hash: line.hash,
-    text: line.text,
-  }))
-  return [{ type: 'text', text: formatReadEnvelope(value.path, value.offset, displayLines, value.totalLines, {
-    eol: value.eol,
-    bom: value.bom,
-  }) }]
+    bom: boolean
+  }, zhPrompt?: boolean): unknown[] {
+    // 模型-facing envelope 使用 `LINE|HASH  内容`；UI 由 presentationMeta 保留独立
+    // number/hash/text，客户端把 `LINE|HASH` 作为 gutter chrome 渲染。
+    const displayLines = value.lines.map(line => ({
+      number: line.number,
+      hash: line.hash,
+      text: line.text,
+    }))
+    return [{ type: 'text', text: formatReadEnvelope(value.path, value.offset, displayLines, value.totalLines, {
+      eol: value.eol,
+      bom: value.bom,
+    }, zhPrompt) }]
 }
 
 interface EditResultValue {
@@ -606,23 +618,40 @@ interface EditResultValue {
   presentation?: { diffs: FileDiff[] }
   /** 方言回收来源（如 hoisted-fields / numeric-keys / deduped）；正常调用为空。 */
   normalizedFrom?: string[]
+  /** 锚点漂移重定位记录(内容唯一匹配时锚点声明行号与目标行不同);无重定位时缺省。 */
+  relocations?: Array<{ from: number; to: number }>
 }
 
-function renderEdit(value: EditResultValue, toolName = 'hashline_edit', readToolName = 'hashline_read'): unknown[] {
+function renderEdit(value: EditResultValue, toolName = 'hashline_edit', readToolName = 'hashline_read', zhPrompt?: boolean): unknown[] {
   const base = value.changed
-    ? `${toolName}: applied ${value.editsApplied} edit(s) to ${value.path}; lines removed=${value.removedLines}, lines added=${value.addedLines}`
-    : `${toolName}: no change was needed for ${value.path}`
+    ? messageText(zhPrompt,
+      `${toolName}: applied ${value.editsApplied} edit(s) to ${value.path}; lines removed=${value.removedLines}, lines added=${value.addedLines}`,
+      `${toolName}: 已对 ${value.path} 应用 ${value.editsApplied} 处编辑;删除 ${value.removedLines} 行,新增 ${value.addedLines} 行`)
+    : messageText(zhPrompt, `${toolName}: no change was needed for ${value.path}`, `${toolName}: ${value.path} 无需修改`)
   // 方言回收成功时透明注明来源与正确形状，让模型下一轮直接用 canonical 形状。
   const normalized =
     value.normalizedFrom !== undefined && value.normalizedFrom.length > 0
-      ? `${base} (arguments were normalized from a malformed shape: ${value.normalizedFrom.join(', ')}; canonical edits item: {"op":"set_line","anchor":"LINE:HASH","new_text":"..."})`
-      : base
-  if (value.preview.length === 0) return [{ type: 'text', text: normalized }]
-  // 预览是首个变更点周围的上下文窗口而非全量锚点清单；文案里明说窗口范围与
-  // 总行数，避免模型误读为“缺行”而多跑一轮 read 验证（2026-09-01 PTC 实测）。
+      ? messageText(zhPrompt,
+        `${base} (arguments were normalized from a malformed shape: ${value.normalizedFrom.join(', ')}; canonical edits item: {"op":"set_line","anchor":"LINE:HASH","new_text":"..."})`,
+        `${base} (参数已从畸形形状规范化: ${value.normalizedFrom.join(', ')};规范的 edits 项: {"op":"set_line","anchor":"LINE:HASH","new_text":"..."})`)
+        : base
+    // 锚点漂移重定位透明注明(宽容但可观测,与方言回收 normalizedFrom 同哲学):让调用方
+    // 立即看到“锚点声明的行号与实际目标行不同”,锚点笔误不会被静默吞掉。
+    const relocationNote = value.relocations !== undefined && value.relocations.length > 0
+      ? messageText(zhPrompt,
+        ` (anchors relocated by unique content match: ${value.relocations.map((r) => `line ${r.from} -> ${r.to}`).join(', ')})`,
+        ` (锚点已按内容唯一匹配重定位: ${value.relocations.map((r) => `第 ${r.from} 行 -> 第 ${r.to} 行`).join(', ')})`)
+      : ''
+    const summary = `${normalized}${relocationNote}`
+      if (value.preview.length === 0) return [{ type: 'text', text: summary }]
+    // 预览是首个变更点周围的上下文窗口而非全量锚点清单；文案里明说窗口范围与
+    // 总行数，避免模型误读为“缺行”而多跑一轮 read 验证（2026-09-01 PTC 实测）。
   const first = value.preview[0].number
   const last = value.preview[value.preview.length - 1].number
-  return [{ type: 'text', text: `${normalized}\nContext around first change (lines ${first}-${last} of ${value.totalLines}; run ${readToolName} again for the full file):\n${value.preview.map(formatLine).join('\n')}` }]
+  const contextLine = messageText(zhPrompt,
+    `Context around first change (lines ${first}-${last} of ${value.totalLines}; run ${readToolName} again for the full file):`,
+    `首次变更点附近内容(第 ${first}-${last} 行,共 ${value.totalLines} 行;完整文件请重新运行 ${readToolName}):`)
+    return [{ type: 'text', text: `${summary}\n${contextLine}\n${value.preview.map(formatLine).join('\n')}` }]
 }
 
 // 工具参数根节点必须保持 type: object。0.3.0 起 edits.items 改为扁平 op 判别形状：
@@ -689,10 +718,12 @@ const DIFF_OUTPUT_SCHEMA: JsonSchema = {
   required: ['path', 'oldText', 'newText'],
   properties: {
     path: { type: 'string' },
-    oldText: { oneOf: [{ type: 'string' }, { type: 'null' }] },
-    newText: { type: 'string' },
-    oldHashes: { type: 'array', items: { type: 'string' } },
-    newHashes: { type: 'array', items: { type: 'string' } },
+      oldText: { oneOf: [{ type: 'string' }, { type: 'null' }] },
+      newText: { type: 'string' },
+      oldStart: { type: 'integer' },
+      newStart: { type: 'integer' },
+      oldHashes: { type: 'array', items: { type: 'string' } },
+      newHashes: { type: 'array', items: { type: 'string' } },
   },
 }
 
@@ -723,6 +754,15 @@ const EDIT_OUTPUT_SCHEMA: JsonSchema = {
     bom: { type: 'boolean' },
     preview: { type: 'array', items: LINE_OUTPUT_SCHEMA },
     normalizedFrom: { type: 'array', items: { type: 'string' } },
+    relocations: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['from', 'to'],
+        properties: { from: { type: 'integer' }, to: { type: 'integer' } },
+      },
+    },
     presentation: {
       type: 'object',
       additionalProperties: false,
@@ -795,12 +835,17 @@ function describeArgumentShape(args: Record<string, unknown>): string {
 }
 
 /** 无法恢复出任何锚定操作时的拒绝文案：附带结构指纹与可复制的正确形状。 */
-function noEditableOperations(args: Record<string, unknown>): never {
+function noEditableOperations(args: Record<string, unknown>, zhPrompt?: boolean): never {
   invalidArgument(
-    'edits must be a non-empty array of LINE:HASH-anchored operations.\n' +
-      `Received argument shape: ${describeArgumentShape(args)}\n` +
-      'Canonical shape: {"file_path":"src/app.js","edits":[{"op":"set_line","anchor":"42:f7a9","new_text":"replacement text"}]} ' +
-      '(op=set_line|insert_after needs anchor+new_text; op=replace_lines needs start_anchor+end_anchor+new_text).',
+    messageText(zhPrompt,
+      'edits must be a non-empty array of LINE:HASH-anchored operations.\n' +
+        `Received argument shape: ${describeArgumentShape(args)}\n` +
+        'Canonical shape: {"file_path":"src/app.js","edits":[{"op":"set_line","anchor":"42:f7a9","new_text":"replacement text"}]} ' +
+        '(op=set_line|insert_after needs anchor+new_text; op=replace_lines needs start_anchor+end_anchor+new_text).',
+      'edits 必须是 LINE:HASH 锚定操作组成的非空数组。\n' +
+        `收到的参数形状: ${describeArgumentShape(args)}\n` +
+        '规范形状: {"file_path":"src/app.js","edits":[{"op":"set_line","anchor":"42:f7a9","new_text":"replacement text"}]} ' +
+        '(op=set_line|insert_after 需 anchor+new_text;op=replace_lines 需 start_anchor+end_anchor+new_text)。'),
   )
 }
 
@@ -810,19 +855,21 @@ function pickField(
   field: string,
   label: string,
   keepEmpty = false,
+  zhPrompt?: boolean,
 ): string | undefined {
   const values: string[] = []
   for (const layer of layers) {
     const raw = layer?.[field]
     // new_text 的空串是 core 层支持的删除语义（keepEmpty）；其余字段的空串仍是适配器哨兵。
     if (raw === undefined || (!keepEmpty && isEmptySentinel(raw))) continue
-    values.push(requireString(raw, label))
+    values.push(requireString(raw, label, zhPrompt))
   }
   const unique = [...new Set(values)]
   if (unique.length > 1) {
     invalidArgument(
-      `conflicting ${field} values for the same edit (${label}): ${JSON.stringify(unique[0])} vs ${JSON.stringify(unique[1])}; ` +
-        'no edit was applied',
+      messageText(zhPrompt,
+        `conflicting ${field} values for the same edit (${label}): ${JSON.stringify(unique[0])} vs ${JSON.stringify(unique[1])}; no edit was applied`,
+        `同一编辑的 ${field} 字段存在冲突值(${label}): ${JSON.stringify(unique[0])} 与 ${JSON.stringify(unique[1])};未应用任何编辑`),
     )
   }
   return unique[0]
@@ -836,10 +883,11 @@ function pickFieldWithOrigin(
   field: string,
   label: string,
   keepEmpty = false,
+  zhPrompt?: boolean,
 ): { value: string | undefined; hoisted: boolean } {
-  const all = pickField([variant, source, rootPool], field, label, keepEmpty)
+  const all = pickField([variant, source, rootPool], field, label, keepEmpty, zhPrompt)
   if (all === undefined) return { value: undefined, hoisted: false }
-  const upper = pickField([variant, source], field, label, keepEmpty)
+  const upper = pickField([variant, source], field, label, keepEmpty, zhPrompt)
   return { value: all, hoisted: upper === undefined }
 }
 
@@ -847,8 +895,8 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function normalizeEditRequest(args: Record<string, unknown>): NormalizedEditRequest {
-  const filePath = requirePath(args.file_path)
+function normalizeEditRequest(args: Record<string, unknown>, zhPrompt?: boolean): NormalizedEditRequest {
+  const filePath = requirePath(args.file_path, zhPrompt)
   // 空哨兵（'' / false / undefined / null）是某些适配器对 schema 可选字段的物化
   // （null 对齐官方 v0.1.2 起对未使用字段 null 占位的接受），忽略；任何非哨兵
   // native 值都被拒绝并引导使用内置 edit。
@@ -856,11 +904,13 @@ function normalizeEditRequest(args: Record<string, unknown>): NormalizedEditRequ
     (args.old_string !== undefined && !isEmptySentinel(args.old_string)) ||
     (args.new_string !== undefined && !isEmptySentinel(args.new_string)) ||
     (args.replace_all !== undefined && !isEmptySentinel(args.replace_all))
-  if (hasNativePayload) {
-    invalidArgument(
-      'this tool only accepts LINE:HASH-anchored edits; use the built-in edit for old_string/new_string literal replacement',
-    )
-  }
+    if (hasNativePayload) {
+      invalidArgument(
+        messageText(zhPrompt,
+          'this tool only accepts LINE:HASH-anchored edits; use the built-in edit for old_string/new_string literal replacement',
+          '本工具只接受 LINE:HASH 锚定编辑;old_string/new_string 字面替换请使用内置 edit'),
+      )
+    }
 
   // 根级散落池：被提升到参数根的可恢复字段（排除声明键与数字键）。
   const rootPool: Record<string, unknown> = {}
@@ -875,13 +925,13 @@ function normalizeEditRequest(args: Record<string, unknown>): NormalizedEditRequ
   const candidates: Array<{ source: Record<string, unknown>; label: string }> = []
   const normalizedFrom: string[] = []
   if (args.edits !== undefined && !Array.isArray(args.edits)) {
-    invalidArgument('edits must be a non-empty array of LINE:HASH-anchored operations')
+      invalidArgument(messageText(zhPrompt, 'edits must be a non-empty array of LINE:HASH-anchored operations', 'edits 必须是 LINE:HASH 锚定操作组成的非空数组'))
   }
   if (Array.isArray(args.edits)) {
     for (let index = 0; index < args.edits.length; index += 1) {
       const entry = args.edits[index]
       if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-        invalidArgument(`edits[${index}] must be an object with exactly one anchored variant`)
+          invalidArgument(messageText(zhPrompt, `edits[${index}] must be an object with exactly one anchored variant`, `edits[${index}] 必须是只含一个锚定变体的对象`))
       }
       candidates.push({ source: entry as Record<string, unknown>, label: `edits[${index}]` })
     }
@@ -904,13 +954,13 @@ function normalizeEditRequest(args: Record<string, unknown>): NormalizedEditRequ
   const rawEdits: RawEdit[] = []
   let hoisted = false
   for (const { source, label } of candidates) {
-    const recovered = recoverEditFromCandidate(source, rootPool, label)
+      const recovered = recoverEditFromCandidate(source, rootPool, label, zhPrompt)
     if (recovered !== undefined) {
       rawEdits.push(recovered.edit)
       if (recovered.hoisted) hoisted = true
     }
   }
-  if (rawEdits.length === 0) noEditableOperations(args)
+    if (rawEdits.length === 0) noEditableOperations(args, zhPrompt)
   if (hoisted && !normalizedFrom.includes('hoisted-fields')) normalizedFrom.push('hoisted-fields')
 
   // 全等去重：同一操作被多份影子携带（edits 项 + 数字键 + 根级）时折叠为一个。
@@ -934,7 +984,7 @@ function normalizeEditRequest(args: Record<string, unknown>): NormalizedEditRequ
       !RECOVERABLE_KEYS.includes(key),
   )
   if (unknown.length > 0) {
-    invalidArgument(`arguments contain unsupported field(s): ${unknown.join(', ')}`)
+      invalidArgument(messageText(zhPrompt, `arguments contain unsupported field(s): ${unknown.join(', ')}`, `参数含不支持的键: ${unknown.join(', ')}`))
   }
 
   return { filePath, rawEdits: deduped, normalizedFrom }
@@ -950,13 +1000,14 @@ function recoverEditFromCandidate(
   source: Record<string, unknown>,
   rootPool: Record<string, unknown>,
   label: string,
+  zhPrompt?: boolean,
 ): { edit: RawEdit; hoisted: boolean } | undefined {
   // 非空 replace 变体（0.2.0 移除的字面替换）需要专属拒绝并指引内置 edit，
   // 不能落入泛型的 noEditableOperations；空哨兵照常忽略。
   for (const holder of [source, rootPool]) {
     const replace = holder.replace
     if (replace !== undefined && !isEmptySentinel(replace)) {
-      invalidArgument(`${label}.replace is not accepted; use the built-in edit for literal replacement`)
+        invalidArgument(messageText(zhPrompt, `${label}.replace is not accepted; use the built-in edit for literal replacement`, `${label}.replace 已不接受;字面替换请使用内置 edit`))
     }
   }
   // 变体键即使值是空哨兵也携带 kind 信号（样本①：edits[0]={set_line:{}}，
@@ -966,14 +1017,17 @@ function recoverEditFromCandidate(
     .filter(({ value }) => value !== undefined)
   const nonEmptyVariantEntries = variantEntries.filter(({ value }) => !isEmptySentinel(value))
   if (nonEmptyVariantEntries.length > 1) {
-    invalidArgument(
-      `${label} must contain exactly one variant (set_line | replace_lines | insert_after); put each operation in its own edits array element`,
-    )
-  }
+      invalidArgument(
+        messageText(zhPrompt,
+          `${label} must contain exactly one variant (set_line | replace_lines | insert_after); put each operation in its own edits array element`,
+          `${label} 必须恰好包含一个变体(set_line | replace_lines | insert_after);每个操作放入独立的 edits 数组元素`),
+        )
+    }
+    // 非空变体键唯一时用它；否则（全空哨兵或无变体键）回退到首个键名作为 kind 信号。
   // 非空变体键唯一时用它；否则（全空哨兵或无变体键）回退到首个键名作为 kind 信号。
   const effectiveVariantEntry = nonEmptyVariantEntries[0] ?? variantEntries[0]
   if (effectiveVariantEntry !== undefined && !isPlainRecord(effectiveVariantEntry.value)) {
-    invalidArgument(`${label}.${effectiveVariantEntry.kind} must be an object`)
+      invalidArgument(messageText(zhPrompt, `${label}.${effectiveVariantEntry.kind} must be an object`, `${label}.${effectiveVariantEntry.kind} 必须是对象`))
   }
 
   const rootVariantEntries = (EDIT_KINDS as readonly string[])
@@ -1006,26 +1060,26 @@ function recoverEditFromCandidate(
     if (field.hoisted) hoisted = true
   }
   if (kind === 'replace_lines') {
-    const startAnchor = pickFieldWithOrigin(variant, source, rootPool, 'start_anchor', fieldLabel)
-    const endAnchor = pickFieldWithOrigin(variant, source, rootPool, 'end_anchor', fieldLabel)
-    const newText = pickFieldWithOrigin(variant, source, rootPool, 'new_text', fieldLabel, true)
+      const startAnchor = pickFieldWithOrigin(variant, source, rootPool, 'start_anchor', fieldLabel, false, zhPrompt)
+      const endAnchor = pickFieldWithOrigin(variant, source, rootPool, 'end_anchor', fieldLabel, false, zhPrompt)
+      const newText = pickFieldWithOrigin(variant, source, rootPool, 'new_text', fieldLabel, true, zhPrompt)
     markHoisted(startAnchor)
     markHoisted(endAnchor)
     markHoisted(newText)
     if (startAnchor.value === undefined || endAnchor.value === undefined || newText.value === undefined) {
-      invalidArgument(`replace_lines requires start_anchor, end_anchor and new_text (${fieldLabel})`)
+        invalidArgument(messageText(zhPrompt, `replace_lines requires start_anchor, end_anchor and new_text (${fieldLabel})`, `replace_lines 需要 start_anchor、end_anchor 与 new_text(${fieldLabel})`))
     }
     return {
       edit: { replace_lines: { start_anchor: startAnchor.value, end_anchor: endAnchor.value, new_text: newText.value } },
       hoisted,
     }
   }
-  const anchor = pickFieldWithOrigin(variant, source, rootPool, 'anchor', fieldLabel)
-  const newText = pickFieldWithOrigin(variant, source, rootPool, 'new_text', fieldLabel, true)
+    const anchor = pickFieldWithOrigin(variant, source, rootPool, 'anchor', fieldLabel, false, zhPrompt)
+    const newText = pickFieldWithOrigin(variant, source, rootPool, 'new_text', fieldLabel, true, zhPrompt)
   markHoisted(anchor)
   markHoisted(newText)
   if (anchor.value === undefined || newText.value === undefined) {
-    invalidArgument(`${kind} requires anchor and new_text (${fieldLabel})`)
+      invalidArgument(messageText(zhPrompt, `${kind} requires anchor and new_text (${fieldLabel})`, `${kind} 需要 anchor 与 new_text(${fieldLabel})`))
   }
   return {
     edit: { [kind]: { anchor: anchor.value, new_text: newText.value } } as RawEdit,
@@ -1078,9 +1132,12 @@ function resultFromContent(
     eol: file.eol,
     bom: file.bom,
     preview: previewContent(content, plan.firstChangedLine, options),
-    ...(normalizedFrom !== undefined && normalizedFrom.length > 0 ? { normalizedFrom } : {}),
+      ...(normalizedFrom !== undefined && normalizedFrom.length > 0 ? { normalizedFrom } : {}),
+      ...(plan.relocations !== undefined && plan.relocations.length > 0
+        ? { relocations: plan.relocations.map(({ from, to }) => ({ from, to })) }
+        : {}),
+    }
   }
-}
 
 interface ResolvedOptions extends EditOptions {
   hashLength: number
@@ -1129,7 +1186,7 @@ function createReadTool(
       },
     output: {
       schema: READ_OUTPUT_SCHEMA,
-      render: (_args: unknown, value: Record<string, unknown>) => renderRead(value as never),
+      render: (_args: unknown, value: Record<string, unknown>) => renderRead(value as never, options.zhPrompt),
       // UI 投影保留 number/hash/text 三个叶字段；客户端专用 toolview 把 number/hash
       // 合并为灰色且不可选的 gutter，text 仍是可选择、可语法高亮的文件正文。
       presentationMeta: (_args: unknown, value: Record<string, unknown>) => {
@@ -1146,24 +1203,30 @@ function createReadTool(
     },
     isConcurrencySafe: () => true,
     async execute(rawArgs: unknown, exec: ToolExec) {
-      const args = requireObject(rawArgs, 'arguments')
-        assertOnlyKeys(args, ['file_path', 'offset', 'limit'], 'arguments')
-        const filePath = requirePath(args.file_path)
-        const offset = isEmptySentinel(args.offset) ? 1 : positiveInteger(args.offset, 'offset')
-        const limit = isEmptySentinel(args.limit) ? options.readLimit : positiveInteger(args.limit, 'limit')
-      if (limit > options.readLimit) invalidArgument(`limit must not exceed ${options.readLimit}`)
+        const args = requireObject(rawArgs, 'arguments', options.zhPrompt)
+          assertOnlyKeys(args, ['file_path', 'offset', 'limit'], 'arguments', options.zhPrompt)
+          const filePath = requirePath(args.file_path, options.zhPrompt)
+          const offset = isEmptySentinel(args.offset) ? 1 : positiveInteger(args.offset, 'offset', options.zhPrompt)
+          const limit = isEmptySentinel(args.limit) ? options.readLimit : positiveInteger(args.limit, 'limit', options.zhPrompt)
+        if (limit > options.readLimit) invalidArgument(messageText(options.zhPrompt, `limit must not exceed ${options.readLimit}`, `limit 不能超过 ${options.readLimit}`))
+        if (exec.agent === undefined) {
+          throw hashlineError('HASHLINE_AGENT_REQUIRED', messageText(options.zhPrompt, `${toolName} requires an agent-backed tool execution`, `${toolName} 需要基于 agent 的工具执行`))
+        }
 
-      const loaded = await loadStableFile(ctx, exec, filePath, undefined, {
-        // explicit offset/limit is a windowed read; the reply stays bounded by readLimit
-          allowLargeFile: !isEmptySentinel(args.offset) || !isEmptySentinel(args.limit),
-      })
-      const file = splitTextFile(loaded.content)
-      if (file.lines.length > 0 && offset > file.lines.length) {
-        throw hashlineError(
-          'HASHLINE_OFFSET_OUT_OF_RANGE',
-          `offset ${offset} is outside ${loaded.target.displayPath} (${file.lines.length} line(s))`,
-        )
-      }
+        const loaded = await loadStableFile(ctx, exec, filePath, undefined, {
+          // explicit offset/limit is a windowed read; the reply stays bounded by readLimit
+            allowLargeFile: !isEmptySentinel(args.offset) || !isEmptySentinel(args.limit),
+            zhPrompt: options.zhPrompt,
+        })
+        const file = splitTextFile(loaded.content)
+        if (file.lines.length > 0 && offset > file.lines.length) {
+          throw hashlineError(
+            'HASHLINE_OFFSET_OUT_OF_RANGE',
+            messageText(options.zhPrompt,
+              `offset ${offset} is outside ${loaded.target.displayPath} (${file.lines.length} line(s))`,
+              `offset ${offset} 超出 ${loaded.target.displayPath} 的范围(共 ${file.lines.length} 行)`),
+          )
+        }
 
       const end = Math.min(file.lines.length, offset + limit - 1)
       const lines: LineRecord[] = []
@@ -1229,7 +1292,7 @@ function createEditTool(
     parameters: editParameters(sandbox, options.zhPrompt, readToolName),
     output: {
       schema: EDIT_OUTPUT_SCHEMA,
-        render: (_args: unknown, value: Record<string, unknown>) => renderEdit(value as unknown as EditResultValue, toolName, readToolName),
+        render: (_args: unknown, value: Record<string, unknown>) => renderEdit(value as unknown as EditResultValue, toolName, readToolName, options.zhPrompt),
       // 始终返回 lossless JSON：无变化时用空 diffs，让 presentResult 回退 generic；
       // 不能返回 undefined，否则真实 DSH ToolRuntime 会把成功结果转成 INVALID_TOOL_OUTPUT。
       presentationMeta: (_args: unknown, value: Record<string, unknown>) => {
@@ -1238,23 +1301,24 @@ function createEditTool(
       },
     },
     async execute(rawArgs: unknown, exec: ToolExec) {
-      const args = requireObject(rawArgs, 'arguments')
-        assertBoundedText(args, 'arguments')
-      // 顶层不再用 assertOnlyKeys 白名单拒绝：方言回收需要先看到根级散落键。
-      // normalizeEditRequest 在回收后仍会响亮拒绝声明/方言键之外的未知键，并对
-      // old_string/new_string/replace_all 给出指向内置 edit 的清晰拒绝。
-      const { filePath, rawEdits, normalizedFrom } = normalizeEditRequest(args)
-      // 编辑结构在 sandbox、审批和文件 I/O 前失败；旧回放或直接调用传入的
-      // 无锚点 replace 由 normalizeEditRequest 与 parseEditEntries 在此拒绝。
-      parseEditEntries(rawEdits)
-      if (exec.agent === undefined) {
-        throw hashlineError('HASHLINE_AGENT_REQUIRED', `${toolName} requires an agent-backed tool execution`)
-      }
-      const policy = await sandbox.resolve(args, exec, toolName)
-      const loaded = await loadStableFile(ctx, exec, filePath, policy?.workspaceRoot, {
-        // edits stay safe via per-edit new_text bounds plus the write-intent CAS
-        allowLargeFile: true,
-      })
+        const args = requireObject(rawArgs, 'arguments', options.zhPrompt)
+          assertBoundedText(args, 'arguments', options.zhPrompt)
+        // 顶层不再用 assertOnlyKeys 白名单拒绝：方言回收需要先看到根级散落键。
+        // normalizeEditRequest 在回收后仍会响亮拒绝声明/方言键之外的未知键，并对
+        // old_string/new_string/replace_all 给出指向内置 edit 的清晰拒绝。
+        const { filePath, rawEdits, normalizedFrom } = normalizeEditRequest(args, options.zhPrompt)
+        // 编辑结构在 sandbox、审批和文件 I/O 前失败；旧回放或直接调用传入的
+        // 无锚点 replace 由 normalizeEditRequest 与 parseEditEntries 在此拒绝。
+        parseEditEntries(rawEdits, options.zhPrompt)
+        if (exec.agent === undefined) {
+          throw hashlineError('HASHLINE_AGENT_REQUIRED', messageText(options.zhPrompt, `${toolName} requires an agent-backed tool execution`, `${toolName} 需要基于 agent 的工具执行`))
+        }
+        const policy = await sandbox.resolve(args, exec, toolName)
+        const loaded = await loadStableFile(ctx, exec, filePath, policy?.workspaceRoot, {
+          // edits stay safe via per-edit new_text bounds plus the write-intent CAS
+          allowLargeFile: true,
+          zhPrompt: options.zhPrompt,
+        })
 
       // Recording the stable snapshot before planning lets fs-observation-policy
       // contribute the same current version to the write-intent waterfall.
@@ -1284,8 +1348,9 @@ function createEditTool(
       }
       ctx.emit('fs/observed', loaded.target, { kind: 'present', version: outcome.version }, exec)
         const value = resultFromContent(loaded.target.displayPath, plan.after, plan, options, normalizedFrom)
-      // 展示层 diff 只由实际写入的前后文本计算；失败路径不产生 presentation。
-      value.presentation = { diffs: computeHunkDiffs(filePath, loaded.content, plan.after, options.hashLength) }
+        // 展示层 diff 只由实际写入的前后文本计算；失败路径不产生 presentation。hunk 路径用
+        // displayPath(与读取 banner 一致的完整绝对路径),而非调用参数里的相对 file_path。
+        value.presentation = { diffs: computeHunkDiffs(loaded.target.displayPath, loaded.content, plan.after, options.hashLength) }
       return value
     },
     presentCall(args: Record<string, unknown>) {

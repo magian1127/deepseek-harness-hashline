@@ -10,7 +10,7 @@
 
 <p align="center">
   <img alt="状态 测试中" src="https://img.shields.io/badge/状态-测试中-ff6b6b">
-  <img alt="版本 0.3.1" src="https://img.shields.io/badge/版本-0.3.1-5965d8">
+  <img alt="版本 0.3.2" src="https://img.shields.io/badge/版本-0.3.2-5965d8">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-3b7a57">
 </p>
 
@@ -38,9 +38,9 @@ CRLF/LF 或空白漂移时的机械可靠性问题。
 | 版本 CAS 保护 | 使用 DSH 文件版本防止校验后到写入前的并发覆盖 |
 | 文本保真 | 保留 UTF-8 BOM、LF/CRLF、mixed EOL 未触及区域和文件末尾换行状态 |
 | 失效恢复 | 唯一哈希匹配自动重定位；否则返回附近当前行，坏锚点报错回显真实锚点 |
-| 原生结果卡片 | 读取成功复用 DSH 原生 `ReadBlock`：完整 `LINE|HASH` 为灰色不可选 gutter，正文独立可选并保留语法高亮；编辑成功显示原生风格 diff 卡，删除/新增行以灰色不可选 `-|旧HASH` / `+|新HASH` gutter 开头，正文保持原生红绿语义 |
+| 原生结果卡片 | 读取成功复用 DSH 原生 `ReadBlock`：完整 `LINE|HASH` 为灰色不可选 gutter，正文独立可选并保留语法高亮；编辑成功显示原生风格 diff 卡，删除/新增行以灰色不可选 `-行号|旧HASH` / `+行号|新HASH` gutter 开头（行号为对应旧/新文件中的 1 基行号），正文保持原生红绿语义 |
 | 可逆严格替换 | 开启“替换内置读写”后，Agent scoped `edit` 只接受最新 `LINE:HASH` 锚点；覆盖可逆并随 Cordis Fiber 清理 |
-| 提示词中文化 | 开启后注入的提示词与工具说明改为中文，工具名保持英文 |
+| 提示词中文化 | 开启后注入的提示词、工具说明、错误消息与工具输出文案改为中文，工具名保持英文 |
 
 ## 环境要求
 

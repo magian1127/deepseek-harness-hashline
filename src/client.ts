@@ -233,8 +233,9 @@ const uiStyles = {
   },
   toolRow: { width: '100%', minWidth: 0 },
   toolSep: { flex: 'none', width: 2, height: 2, margin: '0 8px', borderRadius: 1, background: 'var(--dsw-alias-label-caption)' },
-  toolLink: {
-    flex: 'auto', minWidth: 0, overflow: 'hidden', padding: 0, border: 0, background: 'none',
+    toolLink: {
+      /* shrink-to-fit(flex-grow 0):点击目标止于路径文字末尾,行内剩余空白归展开/收起切换(对齐原生 ToolRow.fileLink)。 */
+      flex: '0 1 auto', minWidth: 0, overflow: 'hidden', padding: 0, border: 0, background: 'none',
     color: 'var(--dsw-alias-label-secondary)', font: 'inherit', fontSize: 14, lineHeight: '24px',
     textAlign: 'left', textDecoration: 'underline', textDecorationColor: 'var(--dsw-alias-label-quaternary)',
     textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer',
@@ -255,23 +256,44 @@ const uiStyles = {
   ioText: {
     minWidth: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--dsw-alias-label-secondary)',
   },
-  errorSummary: {
-    flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-    color: 'var(--dsw-alias-state-error-primary)', fontSize: 12, lineHeight: '20px',
-  },
+    errorSummary: {
+      flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      color: 'var(--dsw-alias-state-error-primary)', fontSize: 12, lineHeight: '20px',
+    },
+    /* 错误展开体顶部的文件路径行:精确复刻原生 ReadBlock banner 的 .label 样式
+       (code 字体、primary 色、单行 ellipsis,不加粗、不断行)。 */
+    errorPath: {
+      minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      color: 'var(--dsw-alias-label-primary)',
+      fontFamily: 'var(--ds-font-family-code)',
+      fontSize: 12, lineHeight: '18px',
+      margin: '4px 0 2px 4px',
+    },
   diffBody: {
     position: 'relative', margin: '4px 0 4px 4px', borderRadius: 12,
     color: 'var(--dsw-alias-label-primary)', background: 'var(--dsw-alias-markdown-code-block)',
   },
-  diffCopy: {
-    position: 'absolute', top: 8, right: 12, zIndex: 1, padding: 0, margin: 0, border: 0,
-    background: 'transparent', color: 'var(--dsw-alias-label-secondary)',
-    font: 'var(--dsw-font-xs-13)', cursor: 'pointer',
-  },
-  diffScroll: { padding: '12px 14px', overflowX: 'auto', overflowY: 'hidden', font: 'var(--dsw-font-markdown-code-block)' },
-  diffLine: { display: 'flex', minHeight: 22, lineHeight: '22px', whiteSpace: 'pre' },
-  diffPath: { display: 'block', minHeight: 22, lineHeight: '22px', paddingRight: 56, fontWeight: 600, whiteSpace: 'pre' },
-  diffGap: { display: 'block', minHeight: 22, lineHeight: '22px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'pre' },
+    /* 顶部 banner 精确复刻原生 ReadBlock:.banner(padding 9px 14px、banner 背景、上侧圆角);
+       label 复用原生 .label 样式(code 字体、primary 色、单行 ellipsis,不加粗)。 */
+    diffBanner: {
+      display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
+      padding: '9px 14px', background: 'var(--dsw-alias-markdown-code-block-banner)',
+      borderTopLeftRadius: 12, borderTopRightRadius: 12,
+    },
+    diffBannerLabel: {
+      minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+      color: 'var(--dsw-alias-label-primary)',
+      fontFamily: 'var(--ds-font-family-code)',
+      fontSize: 12, lineHeight: '18px',
+    },
+    diffCopy: {
+      flex: 'none', padding: 0, margin: 0, border: 0,
+      background: 'transparent', color: 'var(--dsw-alias-label-secondary)',
+      font: 'var(--dsw-font-xs-13)', cursor: 'pointer',
+    },
+    diffScroll: { padding: '12px 14px', overflowX: 'auto', overflowY: 'hidden', font: 'var(--dsw-font-markdown-code-block)' },
+    diffLine: { display: 'flex', minHeight: 22, lineHeight: '22px', whiteSpace: 'pre' },
+    diffGap: { display: 'block', minHeight: 22, lineHeight: '22px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'pre' },
   diffGutter: { flex: 'none', userSelect: 'none', color: 'var(--dsw-alias-label-tertiary)' },
   diffDelContent: { flex: 'none', color: 'var(--dsw-alias-state-error-primary)' },
   diffAddContent: { flex: 'none', color: 'var(--dsw-alias-state-success-primary)' },
@@ -605,12 +627,21 @@ interface HashlineDiffHunk {
   path: string
   oldText: string | null
   newText: string
+  /** hunk 在旧文件中的 1 基起始行号;旧回放 meta 无此字段时缺省,gutter 退化为 -|HASH。 */
+  oldStart?: number
+  /** hunk 在新文件中的 1 基起始行号;同上。 */
+  newStart?: number
   oldHashes: string[]
   newHashes: string[]
 }
 
-function diffLineCount(text: string | null): number {
-  return text === null || text === '' ? 0 : text.split('\n').length
+/**
+ * 校验哈希数组长度与文本行数一致（哈希长度是行数真值）。文本为空字符串时无法区分
+ * “无行”与“单个空行”（两者 join 结果都是 ''），因此额外兼容 0 行形状。
+ */
+function diffLineCountMatches(text: string | null, hashes: string[]): boolean {
+  if (text === null) return hashes.length === 0
+  return hashes.length === text.split('\n').length || (text === '' && hashes.length === 0)
 }
 
 function normalizeHashlineDiff(value: unknown): HashlineDiffHunk | undefined {
@@ -620,16 +651,20 @@ function normalizeHashlineDiff(value: unknown): HashlineDiffHunk | undefined {
   if (!Array.isArray(diff.oldHashes) || !Array.isArray(diff.newHashes)) return undefined
   if (!diff.oldHashes.every(hash => typeof hash === 'string' && HASHLINE_RE.test(hash))) return undefined
   if (!diff.newHashes.every(hash => typeof hash === 'string' && HASHLINE_RE.test(hash))) return undefined
-  if (diff.oldHashes.length !== diffLineCount(diff.oldText as string | null)) return undefined
-  if (diff.newHashes.length !== diffLineCount(diff.newText)) return undefined
-  return {
-    path: diff.path,
-    oldText: diff.oldText as string | null,
-    newText: diff.newText,
-    oldHashes: diff.oldHashes as string[],
-    newHashes: diff.newHashes as string[],
+    if (!diffLineCountMatches(diff.oldText as string | null, diff.oldHashes as string[])) return undefined
+    if (!diffLineCountMatches(diff.newText, diff.newHashes as string[])) return undefined
+    if (diff.oldStart !== undefined && (typeof diff.oldStart !== 'number' || !Number.isSafeInteger(diff.oldStart))) return undefined
+    if (diff.newStart !== undefined && (typeof diff.newStart !== 'number' || !Number.isSafeInteger(diff.newStart))) return undefined
+    return {
+      path: diff.path,
+      oldText: diff.oldText as string | null,
+      newText: diff.newText,
+      ...(diff.oldStart === undefined ? {} : { oldStart: diff.oldStart }),
+      ...(diff.newStart === undefined ? {} : { newStart: diff.newStart }),
+      oldHashes: diff.oldHashes as string[],
+      newHashes: diff.newHashes as string[],
+    }
   }
-}
 
 function hashlineDiffs(block: any): HashlineDiffHunk[] | undefined {
   if (block === null || typeof block !== 'object' || block.kind !== 'tool-result' || block.isError === true) return undefined
@@ -670,6 +705,14 @@ function firstLineOf(text: string): string {
   return nl === -1 ? text : text.slice(0, nl)
 }
 
+/** 标题行的文件路径链接:shrink-to-fit,点击/键盘打开文件且不冒泡触发行展开。 */
+function pathLinkButton(h: any, path: string, openPath: (event: any) => void): any {
+  return h('button', {
+    type: 'button', style: uiStyles.toolLink, onClick: openPath,
+    onKeyDown: function (event: any) { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
+  }, path)
+}
+
 /**
  * 对齐原生 ToolRow 的错误态展开 body：ioCard（OUT 标签 + 红字完整错误）+ Inspect。
  * 原生 .ioCard / .ioSection / .ioLabel / .ioText[data-error] 的结构与配色在此复刻。
@@ -689,8 +732,11 @@ function outIoCard(text: string, options: { error?: boolean; inspect?: (() => vo
     options.inspect === undefined ? null : h('button', { type: 'button', style: uiStyles.toolInspect, onClick: options.inspect }, 'Inspect'))
 }
 
-function errorIoCard(errorText: string, inspect: (() => void) | undefined): any {
-  return outIoCard(errorText, { error: true, inspect })
+function errorIoCard(errorText: string, inspect: (() => void) | undefined, path?: string): any {
+  const h = React.createElement
+  return h(React.Fragment, null,
+    path === undefined || path === '' ? null : h('div', { style: uiStyles.errorPath }, path),
+    outIoCard(errorText, { error: true, inspect }))
 }
 
 /**
@@ -706,8 +752,8 @@ function rowStatusText(state: string): string | null {
 type HashlineDiffRow =
   | { kind: 'path'; text: string }
   | { kind: 'gap'; text: string }
-  | { kind: 'del'; sign: '-'; hash: string; text: string }
-  | { kind: 'add'; sign: '+'; hash: string; text: string }
+  | { kind: 'del'; sign: '-'; hash: string; text: string; number?: number }
+  | { kind: 'add'; sign: '+'; hash: string; text: string; number?: number }
 
 function textLines(text: string | null): string[] {
   return text === null || text === '' ? [] : text.split('\n')
@@ -726,16 +772,18 @@ function buildHashlineDiffRows(diffs: HashlineDiffHunk[]): {
   let previousPath: string | undefined
   for (const diff of diffs) {
     paths.add(diff.path)
-    rows.push(diff.path === previousPath ? { kind: 'gap', text: '⋯' } : { kind: 'path', text: diff.path })
+      if (diff.path === previousPath) rows.push({ kind: 'gap', text: '⋯' })
     previousPath = diff.path
-    textLines(diff.oldText).forEach(function (text, index) {
-      rows.push({ kind: 'del', sign: '-', hash: diff.oldHashes[index], text })
-      removed += 1
-    })
-    textLines(diff.newText).forEach(function (text, index) {
-      rows.push({ kind: 'add', sign: '+', hash: diff.newHashes[index], text })
-      added += 1
-    })
+      textLines(diff.oldText).forEach(function (text, index) {
+        rows.push({ kind: 'del', sign: '-', hash: diff.oldHashes[index], text,
+          ...(diff.oldStart === undefined ? {} : { number: diff.oldStart + index }) })
+        removed += 1
+      })
+      textLines(diff.newText).forEach(function (text, index) {
+        rows.push({ kind: 'add', sign: '+', hash: diff.newHashes[index], text,
+          ...(diff.newStart === undefined ? {} : { number: diff.newStart + index }) })
+        added += 1
+      })
   }
   return { rows, added, removed, files: paths.size }
 }
@@ -765,27 +813,32 @@ function HashlineDiffBlock({ diffs, maxLines = 8 }: { diffs: HashlineDiffHunk[];
       window.setTimeout(function () { setCopied(false) }, 1000)
     })
   }
-  const renderRows = function (rows: HashlineDiffRow[], keyPrefix: string) {
-    return rows.map(function (row, index) {
-      if (row.kind === 'path') return h('div', { key: `${keyPrefix}-${index}`, style: uiStyles.diffPath }, row.text)
-      if (row.kind === 'gap') return h('div', { key: `${keyPrefix}-${index}`, style: uiStyles.diffGap }, row.text)
-      const contentStyle = row.kind === 'del' ? uiStyles.diffDelContent : uiStyles.diffAddContent
-      return h('div', { key: `${keyPrefix}-${index}`, style: uiStyles.diffLine },
-        h('span', { style: uiStyles.diffGutter, 'aria-hidden': true }, `${row.sign}|${row.hash}  `),
-        h('span', { style: contentStyle }, row.text))
-    })
-  }
-  return h('div', { style: uiStyles.diffBody, 'data-hashline-diff': '' },
-    h('button', { type: 'button', style: uiStyles.diffCopy, onClick: copy }, copied ? '复制成功' : '复制'),
-    h('div', { style: uiStyles.diffScroll },
-      renderRows(head, 'head'),
-      hidden > 0 ? h('button', {
-        type: 'button', style: uiStyles.diffExpand, 'aria-expanded': expanded,
-        'aria-label': expanded ? '收起差异' : `展开其余 ${hidden} 行差异`,
-        onClick: function () { setExpanded(!expanded) },
-      }, expanded ? '收起' : `… 其余 ${hidden} 行`) : null,
-      renderRows(tail, 'tail')),
-    h('div', { style: uiStyles.diffFooter }, `└ +${model.added} -${model.removed} · ${model.files} file${model.files === 1 ? '' : 's'}`))
+    const renderRows = function (rows: HashlineDiffRow[], keyPrefix: string) {
+      return rows.map(function (row, index) {
+        if (row.kind === 'path') return null
+        if (row.kind === 'gap') return h('div', { key: `${keyPrefix}-${index}`, style: uiStyles.diffGap }, row.text)
+        const contentStyle = row.kind === 'del' ? uiStyles.diffDelContent : uiStyles.diffAddContent
+        return h('div', { key: `${keyPrefix}-${index}`, style: uiStyles.diffLine },
+          h('span', { style: uiStyles.diffGutter, 'aria-hidden': true }, `${row.sign}${row.number === undefined ? '' : row.number}|${row.hash}  `),
+          h('span', { style: contentStyle }, row.text))
+      })
+    }
+    // 顶部 banner 复刻 ReadBlock:左侧完整路径 label(与读取 banner 同源 displayPath),右侧复制按钮;
+    // 与正文之间的间距由 banner 的 padding/背景与 scroll 的 padding 自然分隔,与读取卡一致。
+    const bannerPath = diffs[0]?.path ?? ''
+    return h('div', { style: uiStyles.diffBody, 'data-hashline-diff': '' },
+      bannerPath === '' ? null : h('div', { style: uiStyles.diffBanner },
+        h('div', { style: uiStyles.diffBannerLabel }, bannerPath),
+        h('button', { type: 'button', style: uiStyles.diffCopy, onClick: copy }, copied ? '复制成功' : '复制')),
+      h('div', { style: uiStyles.diffScroll },
+        renderRows(head, 'head'),
+        hidden > 0 ? h('button', {
+          type: 'button', style: uiStyles.diffExpand, 'aria-expanded': expanded,
+          'aria-label': expanded ? '收起差异' : `展开其余 ${hidden} 行差异`,
+          onClick: function () { setExpanded(!expanded) },
+        }, expanded ? '收起' : `… 其余 ${hidden} 行`) : null,
+        renderRows(tail, 'tail')),
+      h('div', { style: uiStyles.diffFooter }, `└ +${model.added} -${model.removed} · ${model.files} file${model.files === 1 ? '' : 's'}`))
 }
   function createHashlineEditRow(): (props: any) => any {
     const h = React.createElement
@@ -811,17 +864,14 @@ function HashlineDiffBlock({ diffs, maxLines = 8 }: { diffs: HashlineDiffHunk[];
 
       const state = running ? 'ongoing' : error ? 'error' : 'done'
       const errorLine = errorText === '' ? null : h('span', { style: uiStyles.errorSummary, title: errorText }, firstLineOf(errorText))
-      // 对齐原生 ToolRow：错误行的折叠摘要 = 分隔点 + 错误首行（红字），不显示文件路径；
-      // keepContentWhenOpen 让展开时该摘要仍留在标题行。
-      const collapsedContent = errorLine !== null ? h(React.Fragment, null,
-        h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
-        errorLine) : path === '' ? null : h(React.Fragment, null,
-        h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
-        h('button', {
-          type: 'button', style: uiStyles.toolLink, onClick: openPath,
-          onKeyDown: function (event: any) { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
-        }, path))
-        const body = !isOpen ? null : errorText !== '' ? errorIoCard(errorText, props.inspect) : diffs !== undefined ? h(React.Fragment, null,
+        // 错误行折叠摘要只显示错误首行(路径与完整错误在展开体查看);
+        // keepContentWhenOpen 让展开时该摘要仍留在标题行。
+        const collapsedContent = errorLine !== null ? h(React.Fragment, null,
+          h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
+          errorLine) : path === '' ? null : h(React.Fragment, null,
+          h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
+          pathLinkButton(h, path, openPath))
+          const body = !isOpen ? null : errorText !== '' ? errorIoCard(errorText, props.inspect, path) : diffs !== undefined ? h(React.Fragment, null,
           h(HashlineDiffBlock, { diffs, maxLines: 8 }),
           props.inspect === undefined ? null : h('button', {
             type: 'button', style: uiStyles.toolInspect, onClick: props.inspect,
@@ -897,17 +947,14 @@ function filePathFromBlock(block: any): string | undefined {
       }, [t])
       const state = running ? 'ongoing' : error ? 'error' : 'done'
       const errorLine = errorText === '' ? null : h('span', { style: uiStyles.errorSummary, title: errorText }, firstLineOf(errorText))
-      // 对齐原生 ToolRow：错误行的折叠摘要 = 分隔点 + 错误首行（红字），不显示文件路径；
-      // keepContentWhenOpen 让展开时该摘要仍留在标题行。
-      const collapsedContent = errorLine !== null ? h(React.Fragment, null,
-        h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
-        errorLine) : path === '' ? null : h(React.Fragment, null,
-        h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
-        h('button', {
-          type: 'button', style: uiStyles.toolLink, onClick: openPath,
-          onKeyDown: function (event: any) { if (event.key === 'Enter' || event.key === ' ') event.stopPropagation() },
-        }, path))
-        const body = !isOpen ? null : errorText !== '' ? errorIoCard(errorText, props.inspect) : view !== undefined ? h(React.Fragment, null,
+        // 错误行折叠摘要只显示错误首行(路径与完整错误在展开体查看);
+        // keepContentWhenOpen 让展开时该摘要仍留在标题行。
+        const collapsedContent = errorLine !== null ? h(React.Fragment, null,
+          h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
+          errorLine) : path === '' ? null : h(React.Fragment, null,
+          h('span', { style: uiStyles.toolSep, 'aria-hidden': true }),
+          pathLinkButton(h, path, openPath))
+          const body = !isOpen ? null : errorText !== '' ? errorIoCard(errorText, props.inspect, path) : view !== undefined ? h(React.Fragment, null,
           // ReadBlock 只接受 className 定位；外边距由插件自己的包裹元素承担。
           h('div', { style: uiStyles.readBody },
             h(ReadBlock, {

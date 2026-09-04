@@ -51,9 +51,16 @@ BOM 作为文件元数据单独保存，不进入首行哈希。这样首行显�
 检测。需要降低碰撞概率时可提高 `hashLength`，代价是每行输出增加 token。
 
 当锚点行号因先前编辑而漂移（stale read）时，若全文件里恰有一行内容哈希与锚点哈希一致，
-则自动重定位到该行；0 个或 2 个以上候选仍按 stale-read 拒绝并回显上下文。这样把「改完
-未重读」的常见失误变成静默自愈，同时保留对多候选歧义的保守拒绝。
+则重定位到该行并记录到 `EditPlan.relocations`（`from` 为锚点声明行号，`to` 为实际目标行），
+编辑输出透明注明（与方言回收 `normalizedFrom` 同哲学：宽容但可观测，锚点笔误不会被静默吞掉）；
+0 个或 2 个以上候选仍按 stale-read 拒绝并回显上下文。这样把「改完未重读」的常见失误变成
+零成本自愈且事后可审计，同时保留对多候选歧义的保守拒绝。
 
+批内锚点校验失败按数量分路：**1 个失败**原样抛出（回显 ±contextLines 上下文与 `>>>` 新锚点，
+调用方一轮自愈，单点笔误场景）；**≥2 个失败**抛 `HASHLINE_MULTIPLE_ANCHOR_ERRORS`——每个失败
+锚点处回显当前内容（上下各 1 行，`>>>` 标记当前真实锚点，行号超界时 clamp 到文件首/末行），
+调用方直接用回显的新锚点重试，无需为拿锚点而重新读取；重新读取仅作为兜底指引。
+`details.failures` 携带轻量清单（label/anchor/code/line/context）。原子性不变：任一失败整批零写入。
 ## 文本模型
 
 文件被表示为 `{ bom, lines[] }`，每行分别保存 `text` 和 `eol`。这避免把以下状态混为一谈：
@@ -110,6 +117,11 @@ system-prompt 的 scope 层同名阴影规则替换内置原文。严格 `tool:e
 `description` 全部改为中文（工具 description、`file_path`/`edits` 及三种锚定编辑变体的参数 description），
 工具名（`read`/`edit`/`hashline_read`/`hashline_edit`）保持英文。编辑变体的
 items schema 因此由模块级常量改为 `editItemSchema(zhPrompt)` 工厂，`editParameters` 相应接收 `zhPrompt`。
+
+`zhPrompt` 同时控制模型可见的执行文案：错误消息（`messageText` 双语选择器贯穿 core 的
+`AnchorOptions.zhPrompt` 与 index 的校验 helper、`normalizeEditRequest`、`loadStableFile`）与工具输出
+（`renderEdit` 的应用/无变更/预览文案、`formatReadEnvelope` 的 footer/元数据）默认英文，开启后中文。
+启动配置校验（`HASHLINE_INVALID_CONFIG`）与 sandbox 审批文案不随该开关变化。
 
 读文件时执行 `stat → readText → stat`，仅在版本前后一致时接受快照；若第一次不稳定会重试
 一次。这个检查不能阻止检查完成后的变化，因此写入仍必须带版本 CAS。

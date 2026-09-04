@@ -1202,7 +1202,7 @@ test('hashline_edit 成功结果生成 diff meta 与原生 diff 卡，无变化�
   }, harness.exec)
 
   assert.ok(result.presentation.diffs.length >= 1)
-  assert.equal(result.presentation.diffs[0].path, 'sample.txt')
+    assert.equal(result.presentation.diffs[0].path, 'C:\\workspace\\sample.txt')
   assert.match(result.presentation.diffs[0].oldText, /beta/)
   assert.match(result.presentation.diffs[0].newText, /gamma/)
   assert.equal(result.presentation.diffs[0].oldHashes.length, result.presentation.diffs[0].oldText.split('\n').length)
@@ -1360,7 +1360,7 @@ test('替换模式下 scoped edit 使用 edit/read 错误名并严格拒绝无�
     edits: [{ set_line: { anchor: read.lines[1].anchor, new_text: 'x' } }],
   }, harness.exec), error => {
     assert.equal(error.code, 'HASHLINE_HASH_MISMATCH')
-    assert.match(error.message, /^edit: hash mismatch for set_line anchor/)
+    assert.match(error.message, /^edit: hash mismatch for edits\[0\]\.set_line anchor/)
     assert.match(error.message, /run read again/)
     assert.ok(!error.message.includes('hashline_edit'))
     assert.ok(!error.message.includes('hashline_read'))

@@ -72,8 +72,11 @@ test('单行替换生成带上下文的单个 hunk', () => {
   assert.equal(diffs.length, 1)
   assert.equal(diffs[0].path, 'a.ts')
   assert.match(diffs[0].oldText, /b\nc\nd/)
-  assert.match(diffs[0].newText, /b\nC\nd/)
-})
+    assert.match(diffs[0].newText, /b\nC\nd/)
+    // hunk 携带旧/新文件的 1 基起始行号(上下文 3 行覆盖全文件,从第 1 行起)。
+    assert.equal(diffs[0].oldStart, 1)
+    assert.equal(diffs[0].newStart, 1)
+  })
 
 test('带 hashLength 的编辑 hunks 投影逐行旧新哈希', () => {
   const [diff] = computeHunkDiffs('a.ts', 'const x = 1\n', 'const x = 2\n', 4)
@@ -94,13 +97,19 @@ test('分散替换保持为多个 hunk', () => {
   )
   assert.equal(diffs.length, 2)
   assert.match(diffs[0].oldText, /a\nb\nc/)
-  assert.match(diffs[1].oldText, /j\nk\nl/)
-})
+    assert.match(diffs[1].oldText, /j\nk\nl/)
+    // 第二个 hunk 从第 8 行(h)开始:替换点 k=11,上下文 3 行。
+    assert.equal(diffs[1].oldStart, 8)
+    assert.equal(diffs[1].newStart, 8)
+  })
 
 test('从空文件创建内容使用 oldText null，删空得到空 newText', () => {
-  const inserted = computeHunkDiffs('a.ts', '', 'X\n')
-  assert.equal(inserted[0].oldText, null)
-  assert.match(inserted[0].newText, /X/)
+    const inserted = computeHunkDiffs('a.ts', '', 'X\n')
+    assert.equal(inserted[0].oldText, null)
+    assert.match(inserted[0].newText, /X/)
+    // 纯插入无旧文本,oldStart 缺省;新内容从第 1 行起。
+    assert.equal(inserted[0].oldStart, undefined)
+    assert.equal(inserted[0].newStart, 1)
 
   const removed = computeHunkDiffs('a.ts', 'a\nb\n', '')
   assert.equal(removed[0].newText, '')
@@ -185,4 +194,33 @@ test('diff meta 窄化接受合法 hunks 并拒绝空与畸形数据', () => {
     { path: 'a.ts', oldText: null, newText: 'b' },
   ])
   assert.equal(narrowDiffsMeta({ other: 1 }), undefined)
+})
+
+test('空 hunk 元数据可通过窄化：单空行文件删除', () => {
+  // 单空行文件（'\n'）删除：oldText '' + oldHashes 1 个（一个空行），newText '' + newHashes 0 个（无行）。
+  // 空字符串文本无法区分“无行”与“单个空行”，窄化必须按哈希数组长度判定行数。
+  const meta = { diffs: computeHunkDiffs('blank.txt', '\n', '', 4) }
+  const [hunk] = meta.diffs
+  assert.equal(hunk.oldText, '')
+  assert.equal(hunk.oldHashes.length, 1)
+  assert.equal(hunk.newText, '')
+  assert.equal(hunk.newHashes.length, 0)
+  // 窄化通过，diff 卡才有数据可渲染；渲染层行数同样按哈希长度判定。
+  assert.deepEqual(narrowDiffsMeta(meta), meta.diffs)
+})
+
+test('空 hunk 元数据可通过窄化：空文件插入空行', () => {
+  // 空文件插入一个空行：oldText null（纯插入、无 oldHashes），newText '' + newHashes 1 个。
+  const meta = { diffs: computeHunkDiffs('blank.txt', '', '\n', 4) }
+  const [hunk] = meta.diffs
+  assert.equal(hunk.oldText, null)
+  assert.equal(hunk.oldHashes, undefined)
+  assert.equal(hunk.newText, '')
+  assert.equal(hunk.newHashes.length, 1)
+  assert.deepEqual(narrowDiffsMeta(meta), meta.diffs)
+  // 畸形防护不放松：'' 文本配不上哈希长度（既非 0 也非 1）仍拒绝。
+  assert.equal(
+    narrowDiffsMeta({ diffs: [{ path: 'a.ts', oldText: '', newText: 'b', oldHashes: ['aaaa', 'bbbb'], newHashes: ['bbbb'] }] }),
+    undefined,
+  )
 })

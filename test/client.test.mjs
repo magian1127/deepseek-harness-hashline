@@ -445,7 +445,8 @@ test('Hashline 编辑 toolview 把 -|旧HASH / +|新HASH 作为灰色不可选 g
   assert.ok(nodes.some(node => node?.type === 'span' && node.props.children === 'const beta = 3'))
   const copy = nodes.find(node => node?.type === 'button' && node.props.children === '复制')
   copy.props.onClick()
-  assert.deepEqual(clipboard, ['demo.ts\n- const beta = 2\n+ const beta = 3'])
+  // 路径已移入 banner,复制文本不再含路径行,只保留纯 diff 行。
+  assert.deepEqual(clipboard, ['- const beta = 2\n+ const beta = 3'])
   resolveClipboard(false)
   await Promise.resolve()
 })
@@ -530,8 +531,8 @@ test('Hashline 编辑 toolview 对失败结果可展开并展示错误文本', a
   assert.ok(header, '失败结果应当可展开（aria-expanded 存在）')
   // 折叠摘要应带错误文本第一行，且用与原生 ToolRow 一致的状态错误色（而非 label-error）。
   assert.ok(collapsedNodes.some(node => node?.type === 'span' && node.props.style?.color === 'var(--dsw-alias-state-error-primary)' && String(node.props.children).includes('overlapping edits')))
-  // 对齐原生 ToolRow：错误行的折叠摘要就是错误首行，不再显示文件路径链接。
-  assert.ok(!collapsedNodes.some(node => node?.type === 'button' && node.props.children === 'src/index.ts'))
+    // 错误行折叠摘要只显示错误首行,不含路径链接(路径在展开体查看,避免标题过长)。
+    assert.ok(!collapsedNodes.some(node => node?.type === 'button' && node.props.children === 'src/index.ts'), '错误折叠摘要不应含文件路径链接')
   // 对齐原生 ToolRow：根节点带 data-variant，且有 screen-reader 状态文本（英文，交给 dsh-zh 改写）。
   assert.equal(collapsed.props['data-variant'], 'edit')
   assert.ok(collapsedNodes.some(node => node?.type === 'span' && node.props.style?.position === 'absolute' && node.props.children === 'Failed'))
@@ -539,9 +540,10 @@ test('Hashline 编辑 toolview 对失败结果可展开并展示错误文本', a
   header.props.onClick()
   const expanded = reactHarness.render(() => EditRow(props))
   const expandedNodes = flatten(expanded)
-  // 展开后 body 应对齐原生 ioCard：OUT 标签 + data-error 的完整错误文本。
-  assert.ok(expandedNodes.some(node => node?.type === 'span' && node.props['data-error'] === true && node.props.children === message))
-  assert.ok(expandedNodes.some(node => node?.type === 'span' && node.props.children === 'OUT'))
+    // 展开后 body 应对齐原生 ioCard：OUT 标签 + data-error 的完整错误文本，顶部带文件路径行。
+    assert.ok(expandedNodes.some(node => node?.type === 'span' && node.props['data-error'] === true && node.props.children === message))
+    assert.ok(expandedNodes.some(node => node?.type === 'span' && node.props.children === 'OUT'))
+    assert.ok(expandedNodes.some(node => node?.type === 'div' && node.props.style?.fontFamily === 'var(--ds-font-family-code)' && node.props.children === 'src/index.ts'), '错误展开体顶部应有复刻原生样式的文件路径行')
 })
 test('PTC 子调用的读取行（无 meta）可展开并以 OUT 文本回退', async () => {
   const reactHarness = createReactHarness()

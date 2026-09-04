@@ -1,6 +1,6 @@
 {
   "name": "deepseek-harness-hashline",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publishConfig": {
     "access": "public"
   },
@@ -52,8 +52,9 @@
     "check:syntax": "node --check lib/core.js && node --check lib/index.js && node --check lib/presentation.js && node --check lib/runtime-entry.js && node --check lib/client.js && node --check bin/dsh-hashline.mjs && node --check test/core.test.mjs && node --check test/presentation.test.mjs && node --check test/plugin.test.mjs && node --check test/client.test.mjs",
     "check": "npm run build && npm run check:syntax",
     "test": "npm run build && node --test test/core.test.mjs test/presentation.test.mjs test/plugin.test.mjs test/client.test.mjs",
-    "prepare": "npm run build",
-    "prepack": "npm run check && npm test"
+    "prepare": "husky && npm run build",
+    "prepack": "npm run check && npm test",
+    "typecheck": "tsc --project tsconfig.json --noEmit && tsc --project tsconfig.client.json --noEmit"
   },
   "keywords": [
     "deepseek-harness",
@@ -72,6 +73,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.0",
+    "husky": "^9.1.7",
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3"
   },

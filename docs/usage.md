@@ -106,7 +106,7 @@
 - `insert_after.new_text` 不允许为空。
 - 开启“替换内置读写”后，`read` 保持 Hashline 读取参数；`edit` 与全局 `hashline_edit` 是同一锚定-only 契约。
 - 大小边界按读取形态区分：不带 `offset`/`limit` 的整体读取在文件超过 50 KiB UTF-8 字节时拒绝并提示改用窗口；显式带 `offset`/`limit` 的窗口读取与编辑不受整文件大小限制（窗口返回量仍由 `readLimit` 上限约束，单个 `new_text`/`content` 参数仍不得超过 50 KiB）。
-- 复制锚点必须来自**最新一次**读取输出。哈希不匹配时，若全文件恰有一行与锚点哈希一致则自动重定位到该行，否则表示未写入，应使用报错里给出的新锚点或重新读取。
+- 复制锚点必须来自**最新一次**读取输出。单个锚点哈希不匹配时，若全文件恰有一行与锚点哈希一致则自动重定位到该行（编辑结果会注明重定位的行号变化），否则报错并回显附近真实锚点；一次调用中有**多个**锚点同时校验失败时，报 `HASHLINE_MULTIPLE_ANCHOR_ERRORS` 并在各失败位置直接回显当前内容与 `>>>` 新锚点（上下各一行），用新锚点重试即可，无需先重新读取。
 
 ## 会话呈现
 
@@ -132,7 +132,7 @@
 
 ## 配置
 
-bundle 默认配置位于 `cordis.patch.yml`：
+bundle 默认值来自插件源码的配置 schema（`src/index.ts` 的 `createConfigSchema` defaults）；安装包内的 `cordis.patch.yml` 仅声明插件 `id`/`name`，不含配置值：
 
 下表严格按照“设置 → 插件 → 插件配置 → 哈希锚点编辑”卡片从上到下排列：
 
@@ -141,14 +141,14 @@ bundle 默认配置位于 `cordis.patch.yml`：
 | `enabled` | true | 全局启停两个 Hashline 工具及提示词；设置卡片保持可用 |
 | `replaceBuiltinEdit` | false | 在允许编辑的智能体作用域替换内置 `read` / `edit`；替换后的 `edit` 强制使用最新 `LINE:HASH`，不公开文本替换或 `replace`。**极简模式（minimal 预设）下不替换**：仅在 Agent 作用域隐藏全局 `hashline_read` / `hashline_edit` |
 | `promptGuidance` | true | 是否注册简短工具选用提示；替换内置读写开启时，提示以同名 section 阴影在 Agent 作用域替换内置 `read` / `edit` 原提示 |
-| `zhPrompt` | false | 提示词中文化：注入的提示词与工具说明改为中文，工具名保持英文 |
+| `zhPrompt` | false | 提示词中文化：注入的提示词、工具说明、错误消息与工具输出文案改为中文，工具名保持英文 |
 | `hashLength` | 4 | 3–16 位十六进制哈希；改变后旧锚点全部失效 |
 | `readLimit` | 2000 | 单次读取最大行数 |
 | `maxLineLength` | 500 | 单行显示截断阈值，哈希仍覆盖完整行 |
 | `contextLines` | 2 | 首个变更点前后的上下文行数，范围 0–20；编辑成功文本会标注窗口范围（如 `lines 2-6 of 6`）并指引重读全文件，避免把局部预览误读为缺行 |
 
-`cordis.patch.yml` 中的值是部署组合基线。在自然下一次启动或已验证的安装通道生效后，可在“设置 → 插件 → 插件配置 → 哈希锚点编辑”中
-保存用户覆盖；“恢复默认值”会清除用户层字段并重新继承组合基线。设置实时生效。
+`cordis.patch.yml` 本身不含配置值，默认值由配置 schema 提供。在“设置 → 插件 → 插件配置 → 哈希锚点编辑”中可保存用户覆盖；
+“恢复默认值”会清除用户层字段并恢复 schema 默认值。设置实时生效。
 
 替换模式只在智能体原本能看到 `read`、`edit`、`hashline_read`、`hashline_edit` 时安装，避免绕过配置的
 工具限制；若同一智能体已有其它作用域的 `read` 或 `edit`，插件保留该定义并回滚整组替换、记录告警。

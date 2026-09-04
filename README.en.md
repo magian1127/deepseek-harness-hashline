@@ -10,7 +10,7 @@
 
 <p align="center">
   <img alt="Status Experimental" src="https://img.shields.io/badge/Status-Experimental-ff6b6b">
-  <img alt="Version 0.3.1" src="https://img.shields.io/badge/Version-0.3.1-5965d8">
+  <img alt="Version 0.3.2" src="https://img.shields.io/badge/Version-0.3.2-5965d8">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-3b7a57">
 </p>
 
@@ -29,9 +29,9 @@
 | Version CAS protection | Uses the DSH file version to prevent concurrent changes between validation and writing. |
 | Text fidelity | Preserves the UTF-8 BOM, untouched regions of mixed-EOL files, LF/CRLF style, and the final-newline state. |
 | Stale-anchor recovery | Returns nearby current lines and fresh anchors when an anchor is no longer valid. |
-| Native result cards | Successful reads reuse DSH native `ReadBlock`: the whole `LINE|HASH` is one gray, unselectable gutter while the text remains separately selectable and syntax-highlighted. Successful edits use native-style diff chrome: removed/added rows show gray, unselectable `-|OLD_HASH` / `+|NEW_HASH` gutters while preserving red/green diff semantics and content-only selection/copy. |
+| Native result cards | Successful reads reuse DSH native `ReadBlock`: the whole `LINE|HASH` is one gray, unselectable gutter while the text remains separately selectable and syntax-highlighted. Successful edits use native-style diff chrome: removed/added rows show gray, unselectable `-LINE|OLD_HASH` / `+LINE|NEW_HASH` gutters (the line number is 1-based in the old/new file) while preserving red/green diff semantics and content-only selection/copy. |
 | Reversible strict replacement | The Agent-scoped `edit` accepts only fresh `LINE:HASH` anchors; the replacement remains reversible and is cleaned up with the owning Cordis Fiber. |
-| Chinese prompt guidance | When enabled, the injected prompt guidance and tool descriptions are in Chinese while tool names stay in English. |
+| Chinese prompt guidance | When enabled, the injected prompt guidance, tool descriptions, error messages, and tool output text are in Chinese while tool names stay in English. |
 
 ## Requirements
 

@@ -21,6 +21,10 @@ export interface FileDiff {
   path: string
   oldText: string | null
   newText: string
+  /** hunk 在旧文件中的 1 基起始行号；`oldText` 为 null(纯插入)时缺省。 */
+  oldStart?: number
+  /** hunk 在新文件中的 1 基起始行号。 */
+  newStart?: number
   oldHashes?: string[]
   newHashes?: string[]
 }
@@ -97,13 +101,15 @@ export function computeHunkDiffs(
     const newText = newLines.join('\n')
     const oldSlice = beforeLines.slice(hunk.oldStart - 1, hunk.oldStart - 1 + hunk.oldLines)
     const newSlice = afterLines.slice(hunk.newStart - 1, hunk.newStart - 1 + hunk.newLines)
-    diffs.push({
-      path,
-      oldText,
-      newText,
-      ...(oldText === null ? {} : { oldHashes: oldSlice.map(line => hashLine(line, hashLength)) }),
-      newHashes: newSlice.map(line => hashLine(line, hashLength)),
-    })
+      diffs.push({
+        path,
+        oldText,
+        newText,
+        ...(oldText === null ? {} : { oldStart: hunk.oldStart }),
+        newStart: hunk.newStart,
+        ...(oldText === null ? {} : { oldHashes: oldSlice.map(line => hashLine(line, hashLength)) }),
+        newHashes: newSlice.map(line => hashLine(line, hashLength)),
+      })
   }
   return diffs
 }
@@ -154,22 +160,30 @@ export function langFromPath(path: string): string | undefined {
  * @param offset - 1 基窗口起始行。
  * @param lines - 窗口行（number/hash 为锚点 chrome，text 为纯文件正文）。
  * @param totalLines - 文件精确总行数。
- * @param fileMeta - 可选的模型-facing EOL/BOM 元数据；UI 读取卡仍只消费结构化行。
- */
+   * @param fileMeta - 可选的模型-facing EOL/BOM 元数据；UI 读取卡仍只消费结构化行。
+   * @param zhPrompt - 开启后 footer/元数据文案使用中文,默认英文。
+   */
 export function formatReadEnvelope(
-  path: string,
-  offset: number,
-  lines: ReadPresentationLine[],
-  totalLines: number,
-  fileMeta?: { eol: string; bom: boolean },
-): string {
-  const endLine = lines.length > 0 ? lines[lines.length - 1].number : Math.max(0, offset - 1)
-  const footer = endLine < totalLines
-    ? `(Showing lines ${offset}-${endLine} of ${totalLines}. Use offset=${endLine + 1} to continue.)`
-    : `(End of file - total ${totalLines} lines)`
-  const metadata = fileMeta === undefined
-    ? undefined
-    : `(File metadata: eol=${fileMeta.eol}, bom=${fileMeta.bom ? 'yes' : 'no'})`
+    path: string,
+    offset: number,
+    lines: ReadPresentationLine[],
+    totalLines: number,
+    fileMeta?: { eol: string; bom: boolean },
+    zhPrompt?: boolean,
+  ): string {
+    const endLine = lines.length > 0 ? lines[lines.length - 1].number : Math.max(0, offset - 1)
+    const footer = endLine < totalLines
+      ? zhPrompt === true
+        ? `(已展示第 ${offset}-${endLine} 行,共 ${totalLines} 行。使用 offset=${endLine + 1} 继续。)`
+        : `(Showing lines ${offset}-${endLine} of ${totalLines}. Use offset=${endLine + 1} to continue.)`
+      : zhPrompt === true
+        ? `(文件结束 - 共 ${totalLines} 行)`
+        : `(End of file - total ${totalLines} lines)`
+    const metadata = fileMeta === undefined
+      ? undefined
+      : zhPrompt === true
+        ? `(文件元数据: eol=${fileMeta.eol}, bom=${fileMeta.bom ? 'yes' : 'no'})`
+        : `(File metadata: eol=${fileMeta.eol}, bom=${fileMeta.bom ? 'yes' : 'no'})`
   const suffix = metadata === undefined ? footer : `${metadata}\n${footer}`
   const body = lines.length > 0
     ? `${lines.map(line => `${line.number}|${line.hash}  ${line.text}`).join('\n')}\n\n${suffix}`
@@ -219,6 +233,15 @@ export function narrowReadMeta(meta: unknown): ReadMeta | undefined {
   return { path, offset, lines, totalLines, ...(lang === undefined ? {} : { lang }) }
 }
 
+/**
+ * 校验哈希数组长度与文本行数一致。哈希数组长度是行数真值（生成侧从快照 slice 映射）；
+ * 文本为空字符串时无法区分“无行”与“单个空行”（两者 join 结果都是 ''），因此额外兼容 0 行形状。
+ */
+function hashesMatchLines(text: string, hashes: string[] | undefined): boolean {
+  if (hashes === undefined) return true
+  return hashes.length === text.split('\n').length || (text === '' && hashes.length === 0)
+}
+
 /** 判断一个未知值是否为合法的 {@link FileDiff}。 */
 function isFileDiff(value: unknown): value is FileDiff {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
@@ -226,15 +249,15 @@ function isFileDiff(value: unknown): value is FileDiff {
   const hashes = (candidate: unknown): candidate is string[] | undefined =>
     candidate === undefined || (Array.isArray(candidate)
       && candidate.every(hash => typeof hash === 'string' && /^[0-9a-f]{3,16}$/u.test(hash)))
-  const oldCount = oldText === null || oldText === '' ? 0 : typeof oldText === 'string' ? oldText.split('\n').length : -1
-  const newCount = typeof newText === 'string' && newText !== '' ? newText.split('\n').length : 0
   return typeof path === 'string'
     && (oldText === null || typeof oldText === 'string')
     && typeof newText === 'string'
     && hashes(oldHashes)
     && hashes(newHashes)
-    && (oldHashes === undefined || oldHashes.length === oldCount)
-    && (newHashes === undefined || newHashes.length === newCount)
+    && (oldText === null
+      ? oldHashes === undefined || oldHashes.length === 0
+      : hashesMatchLines(oldText, oldHashes))
+    && hashesMatchLines(newText, newHashes)
 }
 
 /**
