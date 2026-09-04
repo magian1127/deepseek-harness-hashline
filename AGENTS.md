@@ -4,7 +4,7 @@
 
 ## 不可破坏的约束
 
-1. 全局工具名固定为 `hashline_read` 和 `hashline_edit`，默认不覆盖内置 `read` / `edit`；只有用户显式开启 `replaceBuiltinEdit` 时，才可在原 `read` / `edit` 均可见的 Agent own scope 可逆注册 Hashline `read` 与 `edit`。
+1. 全局工具名固定为 `hashline_read` 和 `hashline_edit`，默认不覆盖内置 `read` / `edit`；只有显式开启 `replaceBuiltinEdit` 才可在 Agent own scope 可逆替换。DSH `headless` 与 Open Design `open-design` stdio 还必须开启默认关闭的 `replaceBuiltinEditInHeadless`；关闭时保留原版 `read` / `edit` 与显式 `hashline_*`。
 2. `LINE:HASH` 的哈希输入必须包含完整行尾；显示截断不能改变哈希。
 3. BOM、LF/CRLF 和文件末尾换行状态必须在锚定编辑后保留。
 4. 所有锚点和范围必须在写入前针对同一稳定快照统一校验。
@@ -12,7 +12,7 @@
 6. 相对路径与 sandbox policy 必须使用调用会话，不得退回插件进程 cwd。
 7. 共享的 Fiber、副作用、scope、schema、Client/Host HMR、Git 与用户改动保护规则见 [`../docs/`](../docs/README.md)。
 8. 客户端只向 `settings.plugin.item` 贡献配置卡片并使用官方 `settingsScope`；不得添加自定义网络请求、遥测或独立持久数据。
-9. 不复制 `dsh-zh` 的热安装监督器，不部署热行；安装使用本插件的 `node bin/dsh-hashline.mjs install --profile web --link <目录>` CLI（内部封装 `dsh plugin add`，只走持久 bundle 通道，安装后需重启一次 `dsh web` 生效），或直接使用 `dsh plugin`。
+9. 不复制热安装监督器、不部署热行。Web 可用本项目 CLI；Open Design 用 `dsh plugin --profile open-design add <包>`，stock headless 用 `--profile headless`，下一次短进程自然加载。不要用 3080 Web 探测判断非 Web profile。
 
 ## 修改与验证
 

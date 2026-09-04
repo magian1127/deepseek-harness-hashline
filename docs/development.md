@@ -20,10 +20,9 @@
 
 ## 环境要求
 
-- DeepSeek Harness ≥ 0.1.2-rc.1
+- DeepSeek Harness ≥ 0.1.2-rc.1；Web 使用 `web`，Open Design stdio 使用 `open-design`，DSH 一次性任务使用 `headless`
 - Node.js `^22.19.0 || >=24.0.0`
-- 网页配置卡片要求 DSH 包含 `settings.register(..., { exposeToClients: true })` 支持，以及按 `hashline`
-  namespace 注册的 `settings.plugin.item` keyed slot；更旧的 rc 版本只能运行 Host 工具，不能保证网页配置卡片可用。
+- Web 卡要求 settings keyed Slot；`open-design`/`headless` 只运行 Host 工具和设置门控
 
 ## 安装方式
 
@@ -42,6 +41,13 @@ npm run build
 dsh plugin --profile web add "file:<绝对路径>/deepseek-harness-hashline"
 ```
 
+Open Design 与 stock headless 分别安装到自己的 profile：
+
+```powershell
+dsh plugin --profile open-design add "file:<绝对路径>/deepseek-harness-hashline"
+dsh plugin --profile headless add "file:<绝对路径>/deepseek-harness-hashline"
+```
+
 ### 持续开发（link:）
 
 让 profile 直接加载当前源码并保留 Host 热重载：
@@ -50,13 +56,16 @@ dsh plugin --profile web add "file:<绝对路径>/deepseek-harness-hashline"
 dsh plugin --profile web add "link:<绝对路径>/deepseek-harness-hashline"
 ```
 
-新版运行时经 `src/profile-modules.ts` 从 profile 解析 DSH peer，`file:` 与 `link:` 安装都不再需要本地 junction 或 `setup:link`。
+持续开发的两个非交互 profile 同样单独链接：
 
-`file:` 与 `link:` 的物理形态不同：`file:` 由 pnpm 把包**复制**到 profile `node_modules`（普通目录），改工作区
-`src/`、`lib/` 不会反映到运行副本，需要重新 `dsh plugin add` 或手动同步；`link:` 在 `node_modules` 里建**符号链接**
-指向工作区（`LinkType=SymbolicLink`，与 dsh-zh 同形态），改 `lib/` 后运行副本即见新文件。持续开发一律用 `link:`，
-避免“改完源码但运行进程仍用旧副本”的混淆。注意：无论 `file:` 还是 `link:`，模块 URL 仍含 node_modules，因此
-都受上一条 node_modules HMR 失效的约束——link 本身不等于热生效，仍靠插件的 HMR 自监视或一次冷加载。
+```powershell
+dsh plugin --profile open-design add "link:<绝对路径>/deepseek-harness-hashline"
+dsh plugin --profile headless add "link:<绝对路径>/deepseek-harness-hashline"
+```
+
+新版运行时经 `src/profile-modules.ts` 从当前 profile 解析 DSH peer，`file:` 与 `link:` 安装都不再需要本地 junction 或 `setup:link`。
+
+`file:` 物化快照，`link:` 让下一次进程读取当前构建；两者仍按 profile 隔离。Web 长跑进程依赖 HMR/自然重启，`open-design` 与 `headless` 都是短进程，下一次调用自然加载。
 
 ## Peer 解析
 
@@ -87,7 +96,7 @@ npm run build
 
 本插件的专属 Host 监视目标是 `lib/index.js`、`lib/core.js`、`lib/presentation.js` 与 `lib/runtime-entry.js`；构建后须观察旧 Fiber 卸载、新 Fiber 激活及工具契约变化。
 
-`lib/client.js` 由 `src/client.ts` 生成。安装通过 `node bin/dsh-hashline.mjs install --profile web --link <目录>`（内部封装 `dsh plugin add`，只走持久 bundle 通道，不部署热行；安装后需重启一次 `dsh web` 生效）；本插件不复制 dsh-zh 的热安装监督器。
+`lib/client.js` 由 `src/client.ts` 生成。Web 安装通过 `node bin/dsh-hashline.mjs install --profile web --link <目录>`（只走持久 bundle，不部署热行；安装后需重启一次 `dsh web`）；headless 使用 `dsh plugin --profile headless add "link:<目录>"`，下一次无头调用加载 Host 半边，不使用 HMR，也不依赖 3080 Web 探测。
 
 ## 运行环境验证与热更新经验
 
@@ -108,17 +117,13 @@ npm pack --dry-run --json
 ```
 
 - `check`：先执行完整 TypeScript/客户端构建，再对生成的 `lib/` 和 `test/` 做语法检查。
-- `test`：运行四组回归（core、presentation、plugin、client），覆盖 BOM、CRLF/LF、末尾换行、删除、批量顺序、重叠拒绝、
-  锚点过期、稳定读取、版本竞争、沙箱策略、一次性审批、文件观察事件、根级 object + 扁平 `op` 判别 items schema、
-  方言回收（顶层散落/数字键影子/项内提升/根级单操作/冲突拒绝/指纹模板）、锚点 `|` 分隔符容忍、
-  严格替换入口拒绝无锚点调用、读取 envelope、diff meta 与回放回退、设置热切换、智能体作用域替换和客户端卡片。测试用 `test/fixtures/dsh-home` 假 profile
-  隔离 DSH 运行时 peer，不依赖真实安装。
-- `pack --dry-run`：`prepack` 会自动重跑 `check` 与 `test`；发布清单包含 `lib/`（含 `presentation.js`）、
-  `docs/`、`cordis.patch.yml` 与 README/LICENSE。
+- `test`：四组回归覆盖核心编辑、展示、设置、Agent scope，以及 `headlessStartup` / `openDesignStartup` 同步与延迟出现时默认关闭和显式开启的无头替换门控。
+- `pack --dry-run`：`prepack` 自动重跑 `check` 与 `test`；发布清单包含 `lib/`、`docs/`、patch 与 README/LICENSE。
 
 ## 当前 GUI 验证路径
 
 Hashline 的 Host 验收必须以真实 `hashline_read` / `hashline_edit` 调用确认新工具契约；Client 验收必须确认实际 profile 已提供新 bundle，并在现有 GUI 中命中对应 keyed toolview。
+Open Design 必须核对 `open-design` profile，stock headless 核对 `headless`。默认设置下首次 `request/header` 应保留原版 `read` / `edit` 和显式 `hashline_*`；一次性开启门控后只保留严格同名工具。
 
 契约级验证（无需重启即可完成，本改造已通过）：
 

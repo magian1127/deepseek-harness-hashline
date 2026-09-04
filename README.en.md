@@ -17,6 +17,7 @@
 **DeepSeek Harness hash-anchored file editing plugin**: provides `hashline_read` and `hashline_edit`, binding edits to the exact lines most recently read by the model through `LINE:HASH` anchors. This helps detect stale reads, supports multiple edits in one request, and makes file changes mechanically reliable.
 
 `hashline_edit` is an anchored-only surface: `edits` is required and every element is a flat object — `op` is `set_line`, `replace_lines`, or `insert_after`, with `anchor` (or `start_anchor`+`end_anchor`) and `new_text`. Use the built-in `edit` (`old_string` / `new_string`) for a simple unique literal replacement and `write` for new files. Passing an actual `old_string` / `new_string` / `edits[].replace` payload is rejected before any file access with guidance toward the built-in `edit` (aligned with DSH v0.1.2: `null` placeholders for fields unused by the current operation are treated as absent).
+Open Design (profile `open-design`) and DSH one-shot `headless` keep the original `read` / `edit` by default. Strict replacement reaches either non-interactive profile only when the separate, default-off headless replacement gate is enabled; explicit `hashline_*` tools remain available while it is off.
 
 ## Features
 
@@ -30,48 +31,42 @@
 | Text fidelity | Preserves the UTF-8 BOM, untouched regions of mixed-EOL files, LF/CRLF style, and the final-newline state. |
 | Stale-anchor recovery | Returns nearby current lines and fresh anchors when an anchor is no longer valid. |
 | Native result cards | Successful reads reuse DSH native `ReadBlock`: the whole `LINE|HASH` is one gray, unselectable gutter while the text remains separately selectable and syntax-highlighted. Successful edits use native-style diff chrome: removed/added rows show gray, unselectable `-LINE|OLD_HASH` / `+LINE|NEW_HASH` gutters (the line number is 1-based in the old/new file) while preserving red/green diff semantics and content-only selection/copy. |
-| Reversible strict replacement | The Agent-scoped `edit` accepts only fresh `LINE:HASH` anchors; the replacement remains reversible and is cleaned up with the owning Cordis Fiber. |
+| Reversible strict replacement | The Agent-scoped `edit` accepts only fresh `LINE:HASH`. Open Design and DSH headless also require the default-off headless gate. The replacement is reversible and Fiber-owned. |
 | Chinese prompt guidance | When enabled, the injected prompt guidance, tool descriptions, error messages, and tool output text are in Chinese while tool names stay in English. |
 
 ## Requirements
 
-- DeepSeek Harness ≥ 0.1.2-rc.1, using the `web` profile
+- DeepSeek Harness ≥ 0.1.2-rc.1; the Web GUI uses `web`, Open Design stdio uses `open-design`, and DSH one-shot tasks use `headless`
 - Node.js `^22.19.0 || >=24.0.0`
-- The web settings card also requires DSH support for `settings.register(..., { exposeToClients: true })`
+- The Web card also requires `settings.register(..., { exposeToClients: true })`; `open-design`/`headless` run the Host half only
 
 ## Installation
 
-Use this plugin's unified installation CLI (same style as `deepseek-harness-zh_pro` and
-`deepseek-harness-zhipu_plan_tools`: `node bin/dsh-*.mjs install`). For a source checkout, install
-development dependencies once and build before the first installation or after source changes:
+DSH bundles are profile-scoped, so Web, Open Design, and stock headless must be installed independently. Use this plugin's CLI for Web and official `dsh plugin` commands for non-interactive profiles. Build a source checkout first:
 
 ```powershell
 npm install
 npm run build
 
+# Web GUI
 node bin/dsh-hashline.mjs install --profile web --link $PWD
+
+# Open Design's actual stdio profile
+dsh plugin --profile open-design add "link:$PWD"
+
+# Optional: DSH's built-in one-shot headless profile
+dsh plugin --profile headless add "link:$PWD"
 ```
 
-`--link` must point at this plugin's source directory; it is equivalent to
-`dsh plugin --profile web add "link:<absolute-path>/deepseek-harness-hashline"`. DSH reads the package's
-`dsh.bundle` declaration and adds it to the profile's `dsh.profile.bundles`; it mounts automatically the
-next time `dsh web` starts (this plugin does not deploy hot rows, nor does it copy dsh-zh's hot-install
-supervisor).
+`--link` must point at this plugin's source directory. Each command changes only its target profile; the next `open-design`/`headless` process loads the bundle without Web-port probing or HMR.
 
-> ⚠️ When the `link:` target directory does not exist, DSH classifies the package as a plain dependency:
-> it neither fails nor mounts (it never joins `dsh.profile.bundles`). Confirm the channel with `status`:
+> ⚠️ A missing `link:` target can remain a plain dependency without joining `dsh.profile.bundles`. Verify each profile:
 
 ```powershell
 node bin/dsh-hashline.mjs status --profile web
-#  依赖:      link:.../deepseek-harness-hashline
-#  bundle 通道: 已就绪（重启自动挂载）   ← should read "ready"
-```
-
-The lower-level command also works, followed by a composition check:
-
-```powershell
-dsh plugin --profile web add "link:<absolute-path>/deepseek-harness-hashline"
-dsh --profile web --dump-config
+dsh plugin --profile open-design list
+dsh --profile open-design --dump-default-config
+dsh plugin --profile headless list
 ```
 
 ## Updates
@@ -85,17 +80,17 @@ DSH.
 
 ```powershell
 node bin/dsh-hashline.mjs remove --profile web
-# equivalent to: dsh plugin --profile web remove deepseek-harness-hashline
+dsh plugin --profile open-design remove deepseek-harness-hashline
+dsh plugin --profile headless remove deepseek-harness-hashline
 ```
 
-Uninstallation removes the persistent bundle and running entries. It does not delete DSH session data.
-Existing user overrides in the `hashline` settings namespace may remain and can be reused after a later installation.
+Uninstallation is profile-scoped and removes the persistent bundle and running entries without deleting DSH session data. Existing user overrides in the `hashline` settings namespace may remain and can be reused after a later installation.
 
 ## Settings and data
 
 | Data | Storage |
 | --- | --- |
-| Enablement, built-in read/edit replacement, tool-selection guidance, prompt language, and four hash/read parameters | The DSH `hashline` settings namespace, edited under Settings > Plugins > Plugin configuration |
+| Enablement, built-in read/edit replacement, the headless replacement gate, tool-selection guidance, prompt language, and four hash/read parameters | The DSH `hashline` settings namespace, edited under Settings > Plugins > Plugin configuration |
 
 The plugin does not register capabilities beyond its model tools, upload data, or maintain independent data files. The client only contributes a configuration card to the existing `settings.plugin.item` slot and uses DSH `settingsScope` to read and write the same Host namespace.
 The exact card order, defaults, and ranges are maintained only in the [Usage guide configuration section](docs/usage.md#配置).
@@ -108,7 +103,9 @@ The exact card order, defaults, and ranges are maintained only in the [Usage gui
 
 **How do I read large files?** A read without `offset`/`limit` is capped at 50 KiB and the tool then tells you to switch to windows. Pass explicit `offset`/`limit` to read any file in bounded windows; windowed reads and edits are not limited by total file size (each `new_text` still respects the 50 KiB cap).
 
-**How does Replace built-in read/edit work?** When enabled, an allowed agent sees strict `read` and `edit` surfaces while `hashline_read` and `hashline_edit` are hidden. Call `read` before each change and use its fresh anchors. Each `edit.edits` element is a flat object: `op` is `set_line`, `replace_lines`, or `insert_after`, with `anchor` (or `start_anchor`+`end_anchor`) and `new_text`. Disabling the setting restores the original tools. Replacement is installed only when all four original capabilities are already visible, so it cannot bypass visibility restrictions. The same Agent scope also replaces the built-in prompt guidance and restores it when disabled. **Under the minimal preset, no replacement is installed**: the plugin only hides the global `hashline_read` / `hashline_edit` in that agent's scope, keeping the "persistent shell + str_replace_editor" two-tool composition free of third-party capabilities. This hiding does **not** depend on the "Replace built-in read/edit" switch: it applies to minimal agents whenever the plugin is enabled.
+**How does Replace built-in read/edit work?** When enabled, an allowed agent sees strict `read` and `edit` surfaces while `hashline_read` and `hashline_edit` are hidden. Call `read` before each change and use its fresh anchors. Each `edit.edits` element is a flat object: `op` is `set_line`, `replace_lines`, or `insert_after`, with `anchor` (or `start_anchor`+`end_anchor`) and `new_text`. Disabling the setting restores the original tools.
+
+Open Design's `open-design` stdio profile and DSH's `headless` profile additionally require **Replace built-in read/edit in headless mode**, which is off by default. While the gate is off, they retain original `read` / `edit` and explicit `hashline_read` / `hashline_edit`. Replacement still requires all four inherited tools; minimal remains exempt and denies the global Hashline tools.
 
 ## Development documentation
 

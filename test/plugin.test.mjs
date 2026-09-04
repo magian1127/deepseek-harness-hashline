@@ -40,6 +40,10 @@ function createHarness(options = {}) {
   const effectDisposers = []
   const liveAgents = []
   const warnings = []
+  let headlessActive = options.headless === true
+  const headlessInjectors = new Set()
+  let openDesignActive = options.openDesign === true
+  const openDesignInjectors = new Set()
   const builtInEdit = { name: 'edit', source: 'tool-fs' }
   const builtInRead = { name: 'read', source: 'tool-fs' }
 
@@ -242,12 +246,22 @@ function createHarness(options = {}) {
     },
     inject(deps, callback) {
       if (deps.includes('hmr') && options.hmr !== undefined) callback(ctx)
+      if (deps.includes('headlessStartup')) {
+        if (headlessActive) callback(ctx)
+        else headlessInjectors.add(callback)
+      }
+      if (deps.includes('openDesignStartup')) {
+        if (openDesignActive) callback(ctx)
+        else openDesignInjectors.add(callback)
+      }
     },
     get(name) {
       if (name === 'sandboxPolicy') return policyService
       if (name === 'approval') return approval
       if (name === 'hmr') return options.hmr
         if (name === 'agentPresets') return options.agentPresetsService === false ? undefined : agentPresetsService
+      if (name === 'headlessStartup') return headlessActive ? { task: 'test' } : undefined
+      if (name === 'openDesignStartup') return openDesignActive ? { mode: 'stdio' } : undefined
       return undefined
     },
     effect(setup) {
@@ -290,6 +304,18 @@ function createHarness(options = {}) {
       const previous = settingsState
       settingsState = { ...settingsState, ...patch }
       for (const watcher of settingsWatchers) watcher(settingsState, previous)
+    },
+    enableHeadless() {
+      if (headlessActive) return
+      headlessActive = true
+      for (const callback of headlessInjectors) callback(ctx)
+      headlessInjectors.clear()
+    },
+    enableOpenDesign() {
+      if (openDesignActive) return
+      openDesignActive = true
+      for (const callback of openDesignInjectors) callback(ctx)
+      openDesignInjectors.clear()
     },
     createAgent(id = `agent-${liveAgents.length + 1}`, hiddenTools = [], preset) {
       return makeAgent(id, hiddenTools, true, preset)
@@ -384,6 +410,8 @@ test('注册显式暴露的 Hashline 持久设置命名空间', () => {
   assert.equal(registration.options.applies, 'live')
   assert.deepEqual(registration.options.base, registration.schema({}))
   assert.equal(registration.schema({ replaceBuiltinEdit: true }).replaceBuiltinEdit, true)
+    assert.equal(registration.schema({}).replaceBuiltinEditInHeadless, false)
+    assert.equal(registration.schema({ replaceBuiltinEditInHeadless: true }).replaceBuiltinEditInHeadless, true)
   assert.throws(() => registration.schema({ hashLength: 2 }))
 })
 
@@ -493,6 +521,108 @@ test('replaceBuiltinEdit 对现有 Agent 可逆遮蔽内置 read/edit', async ()
   assert.equal(harness.viewTool('hashline_read').name, 'hashline_read')
   assert.match(harness.sections.get('tool:hashline').text, /built-in edit/)
   assert.equal(harness.agent.__scopedPrompt.size, 0)
+})
+
+test('headless 默认不替换内置 read/edit，但保留显式 Hashline 工具', () => {
+  const harness = createHarness({ headless: true, settings: { replaceBuiltinEdit: true } })
+  apply(harness.ctx)
+
+  assert.equal(harness.viewTool('read').source, 'tool-fs')
+  assert.equal(harness.viewTool('edit').source, 'tool-fs')
+  assert.equal(harness.viewTool('hashline_read').name, 'hashline_read')
+  assert.equal(harness.viewTool('hashline_edit').name, 'hashline_edit')
+  assert.match(harness.sections.get('tool:hashline').text, /built-in edit/)
+  assert.equal(harness.agent.__scopedPrompt.size, 0)
+})
+
+test('Open Design stdio 默认不替换内置 read/edit，但保留显式 Hashline 工具', () => {
+  const harness = createHarness({ openDesign: true, settings: { replaceBuiltinEdit: true } })
+  apply(harness.ctx)
+
+  assert.equal(harness.viewTool('read').source, 'tool-fs')
+  assert.equal(harness.viewTool('edit').source, 'tool-fs')
+  assert.equal(harness.viewTool('hashline_read').name, 'hashline_read')
+  assert.equal(harness.viewTool('hashline_edit').name, 'hashline_edit')
+  assert.match(harness.sections.get('tool:hashline').text, /built-in edit/)
+})
+
+test('openDesignStartup 延迟出现时按默认关闭门控撤销替换', () => {
+  const harness = createHarness({ settings: { replaceBuiltinEdit: true } })
+  apply(harness.ctx)
+  assert.equal(harness.viewTool('edit').source, undefined)
+
+  harness.enableOpenDesign()
+  assert.equal(harness.viewTool('read').source, 'tool-fs')
+  assert.equal(harness.viewTool('edit').source, 'tool-fs')
+  assert.equal(harness.viewTool('hashline_read').name, 'hashline_read')
+  assert.equal(harness.viewTool('hashline_edit').name, 'hashline_edit')
+})
+
+test('Open Design stdio 显式开启无头门控后替换内置 read/edit', () => {
+  const harness = createHarness({
+    openDesign: true,
+    settings: { replaceBuiltinEdit: true, replaceBuiltinEditInHeadless: true },
+  })
+  apply(harness.ctx)
+
+  assert.equal(harness.viewTool('read').source, undefined)
+  assert.equal(harness.viewTool('edit').source, undefined)
+  assert.equal(harness.viewTool('hashline_read'), undefined)
+  assert.equal(harness.viewTool('hashline_edit'), undefined)
+})
+
+test('headlessStartup 延迟出现时在 Agent 创建前撤销默认替换', () => {
+  const harness = createHarness({ settings: { replaceBuiltinEdit: true } })
+  apply(harness.ctx)
+  assert.equal(harness.viewTool('edit').source, undefined)
+
+  harness.enableHeadless()
+  assert.equal(harness.viewTool('read').source, 'tool-fs')
+  assert.equal(harness.viewTool('edit').source, 'tool-fs')
+  assert.equal(harness.viewTool('hashline_read').name, 'hashline_read')
+  assert.equal(harness.viewTool('hashline_edit').name, 'hashline_edit')
+  assert.match(harness.sections.get('tool:hashline').text, /built-in edit/)
+})
+
+test('headless 仅在两个替换开关同时开启时遮蔽内置 read/edit', () => {
+  const harness = createHarness({
+    headless: true,
+    settings: { replaceBuiltinEdit: true, replaceBuiltinEditInHeadless: true },
+  })
+  apply(harness.ctx)
+
+  assert.equal(harness.viewTool('read').source, undefined)
+  assert.equal(harness.viewTool('edit').source, undefined)
+  assert.equal(harness.viewTool('hashline_read'), undefined)
+  assert.equal(harness.viewTool('hashline_edit'), undefined)
+  assert.equal(harness.sections.get('tool:hashline'), undefined)
+  assert.deepEqual([...harness.agent.__scopedPrompt.keys()], ['tool:read', 'tool:edit'])
+})
+
+test('headless 替换开关热切换可逆', () => {
+  const harness = createHarness({ headless: true, settings: { replaceBuiltinEdit: true } })
+  apply(harness.ctx)
+  assert.equal(harness.viewTool('edit').source, 'tool-fs')
+
+  harness.updateSettings({ replaceBuiltinEditInHeadless: true })
+  assert.equal(harness.viewTool('edit').source, undefined)
+  assert.equal(harness.viewTool('hashline_edit'), undefined)
+
+  harness.updateSettings({ replaceBuiltinEditInHeadless: false })
+  assert.equal(harness.viewTool('edit').source, 'tool-fs')
+  assert.equal(harness.viewTool('hashline_edit').name, 'hashline_edit')
+})
+
+test('非 headless 继续只由 replaceBuiltinEdit 控制替换', () => {
+  const harness = createHarness({
+    settings: { replaceBuiltinEdit: true, replaceBuiltinEditInHeadless: false },
+  })
+  apply(harness.ctx)
+
+  assert.equal(harness.viewTool('read').source, undefined)
+  assert.equal(harness.viewTool('edit').source, undefined)
+  assert.equal(harness.viewTool('hashline_read'), undefined)
+  assert.equal(harness.viewTool('hashline_edit'), undefined)
 })
 
 test('read/edit 替换覆盖后创建的 Agent，并尊重 preset 隐藏策略', () => {

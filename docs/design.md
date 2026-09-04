@@ -26,16 +26,15 @@ stale read，并把多处修改作为一个原子请求处理。它不判断代�
   收到参数的结构指纹（仅键名与形状，不含内容）与 canonical 形状模板。原始
   `ctx.tools.register` 路径不会自动校验输入值，真正的执行时强制仍由 `parseEditEntries` 完成，
   并防御旧回放和直接调用；
-- `replaceBuiltinEdit` 显式开启时，只在具体智能体的自身作用域注册严格哈希锚定的 `read` 与 `edit`，可逆遮蔽其继承的原工具。
-  该 `edit` 与全局 `hashline_edit` 是同一锚定-only 契约：`edits` 必填且非空，只含
-  `set_line` / `replace_lines` / `insert_after`；执行层同样拒绝 `old_string` / `new_string` /
-  `replace_all` 和无锚点 `replace`，确保替换模式不能绕开行哈希；
+- `replaceBuiltinEdit` 显式开启时，只在具体智能体的自身作用域注册严格哈希锚定的 `read` 与 `edit`，可逆遮蔽其继承的原工具。`headless` 运行还必须显式开启默认关闭的 `replaceBuiltinEditInHeadless`；门控关闭时仍注册全局 `hashline_read` / `hashline_edit`，但保留原版 `read` / `edit`。
+  该 `edit` 与全局 `hashline_edit` 是同一锚定-only 契约：`edits` 必填且非空，只含 `set_line` / `replace_lines` / `insert_after`；执行层同样拒绝 `old_string` / `new_string` / `replace_all` 和无锚点 `replace`，确保替换模式不能绕开行哈希；
 - 全局 `hashline_read` 的说明始终配对全局 `hashline_edit`；只有替换整组安装成功的 Agent scoped `read` 才配对严格 `edit`。
   因可见性限制而跳过替换时，不得让全局读取说明把模型导向内置文本 `edit`；
 - 整文件 50 KiB 预检仅约束不带 `offset`/`limit` 的整体读取；显式窗口读取与编辑均豁免（窗口返回量由 `readLimit` 约束，编辑侧由单条 `new_text`/`content` ≤ 50 KiB 与 `fs/write-intent` + `replaceIfVersion` CAS 兜底）。超限整读的错误只指引窗口化、不指引内置 `read`——`replaceBuiltinEdit` 替换形态下内置读取已被本插件遮蔽，旧指引构成死胡同；
 - 替换前确认该智能体的 `read`、`edit`、`hashline_read`、`hashline_edit` 均可见，避免绕过配置限制；同层重名时保留已有定义并回滚整组替换；
 - **极简模式（minimal 预设）不替换**：经 `agentPresets.composedPreset(agent.ctx) === 'minimal'` 判定后，仅在该智能体作用域以 `restrict` deny 全局 `hashline_read` / `hashline_edit`，不注册 own-scope `read` / `edit` 与提示词阴影，维持该预设的双工具组合；该 deny **与 `replaceBuiltinEdit` 开关无关**，只要插件 `enabled` 即对极简 agent 生效（曾因 deny 被放在替换分支内，关闭替换后极简 agent 重新看到全局 hashline 工具——回归测试已锁定）；
 - 会话**中途切换预设**(如 cordis → minimal,DSH `recompose`)时,监听官方 `agent-preset/selected` 对目标 Agent 重新评估:撤销已装的替换、改挂 deny,避免残留注入;不得再监听 `tools/change` 兜底——工具注册/注销会同步触发它,重装表面又触发它,形成无限递归卡死会话创建;
+- 非交互 profile 由服务而非 cwd/会话 id 判定：DSH headless 提供 `headlessStartup`，Open Design stdio 提供 `openDesignStartup`。两者都做同步探测和延迟 `ctx.inject`；服务出现时先撤销旧表面再按同一 settings 快照重建，保证 runner 创建 Agent 前门控生效；
 - 不修改或卸载 `tool-fs`；
 - V1 不做 symbol、AST、fuzzy matching、grep 锚点或上下文卫生跟踪；
 - 新建文件和全量重写不属于本插件。
@@ -102,11 +101,9 @@ BOM 作为文件元数据单独保存，不进入首行哈希。这样首行显�
 - `settings.register('hashline', Config, { exposeToClients: true })` 注册持久用户覆盖层；
 - `settings.watch(...)` 实时重建工具和提示词表面；
 - `agents.list()` 与 `agent/created` 为现有及新 Agent 安装可选 scoped `edit`。
+- `headlessStartup` / `openDesignStartup` 的同步探测与延迟 inject 用于计算 `replaceBuiltinEditInHeadless`；它只改变同名替换，不改变全局 Hashline 工具注册；
 
-提示词注入分两种模式：默认模式全局注册 `tool:hashline`（order 103）；`replaceBuiltinEdit` 开启时改为在
-每个 Agent 的自身作用域注册同名的 `tool:read` / `tool:edit` section（order 100 / 102），利用 DSH
-system-prompt 的 scope 层同名阴影规则替换内置原文。严格 `tool:edit` 文本要求先读、每个数组项一个锚定操作，
-并明确禁用文本替换与 `replace`；关闭替换后 scoped 阴影随整组 disposer 撤除，恢复全局 `tool:hashline`。
+提示词注入分两种运行态：有效替换模式在每个 Agent 的自身作用域注册同名 `tool:read` / `tool:edit` section（order 100 / 102），利用 DSH system-prompt 的 scope 层同名阴影规则替换内置原文；普通模式（含 headless 门控关闭）全局注册 `tool:hashline`（order 103）。严格 `tool:edit` 文本要求先读、每个数组项一个锚定操作，并明确禁用文本替换与 `replace`；门控切换后 scoped 阴影与全局提示随整组 disposer 互换，不留下错误工具名。
 
 阴影文本必须按工具拆分（`readGuidanceText` / `editGuidanceText`），不能把同一段合并说明同时塞进
 `tool:read` 与 `tool:edit`：两段完全相同的文本会在组装后的系统提示词里重复出现，重蹈“多出来”的旧。
@@ -181,10 +178,7 @@ React、ToolResult 或 DSH 运行时实例。
 `__ModuleLoader__` bundle；`src/bin/dsh-hashline.mts` 经 `tsc -p tsconfig.cli.json` 编译为
 `bin/dsh-hashline.mjs`（`install` / `remove` / `status` CLI）。发布包消费 `lib/` 产物，不要求安装时再转译。运行时 peer
 `@deepseek-ai/dsh-llm` 和 `@deepseek-ai/schemastery` 由 `src/profile-modules.ts` 从当前 profile 解析加载，`file:` 与
-`link:` 安装同路径，不再需要 junction。标准安装命令把 `cordis.patch.yml` 作为 profile
-bundle 层加入，并从 package manifest 发现 client bundle。CLI 是 `dsh plugin` 的轻量封装：只走持久
-bundle 通道（校验 `dsh.profile.bundles` 真正就绪），不部署热行，也不复制与核心编辑能力无关的 profile
-热安装监督逻辑（AGENTS.md 约束 9）；安装后需重启一次 `dsh web` 生效。
+`link:` 安装同路径，不再需要 junction。bundle 按 profile 隔离：Web、Open Design 的 `open-design`、DSH 自带 `headless` 必须分别安装。Web 发现 Client bundle；两个非交互 profile 只加载 Host 半边并在下一次短进程读取新构建。CLI 仍只封装 Web 的持久安装；其它 profile 使用官方 `dsh plugin`。
 
 ## 后续候选
 

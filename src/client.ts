@@ -9,6 +9,7 @@ const LOCALE_NAMESPACE = 'settings.hashline'
 const FIELDS = [
   'enabled',
   'replaceBuiltinEdit',
+  'replaceBuiltinEditInHeadless',
   'promptGuidance',
   'zhPrompt',
   'hashLength',
@@ -20,6 +21,7 @@ const FIELDS = [
 const DEFAULTS = {
   enabled: true,
   replaceBuiltinEdit: false,
+  replaceBuiltinEditInHeadless: false,
   promptGuidance: true,
   zhPrompt: false,
   hashLength: 4,
@@ -48,6 +50,8 @@ const zh = {
   enabledDesc: '控制哈希锚点读取、编辑工具及相关提示。关闭后仍保留配置入口。',
   replaceBuiltinEdit: '替换内置读写',
   replaceBuiltinEditDesc: '让每个允许编辑的智能体使用哈希锚点读写；替换后的编辑工具只接受读取工具最新输出中的行哈希锚点，不接受文本替换参数。关闭后恢复原工具。',
+  replaceBuiltinEditInHeadless: '无头模式替换内置读写',
+  replaceBuiltinEditInHeadlessDesc: '仅用于 Open Design 等 headless 调用。还需同时开启“替换内置读写”才会替换 read/edit；关闭时仍保留显式 hashline_read/hashline_edit。默认关闭。',
   promptGuidance: '注入工具选择提示',
   promptGuidanceDesc: '在系统提示中说明何时使用哈希锚点读取和编辑。',
   zhPrompt: '提示词中文化',
@@ -90,6 +94,8 @@ const en = {
   enabledDesc: 'Controls Hashline read/edit tools and related guidance. The configuration entry remains available when disabled.',
   replaceBuiltinEdit: 'Replace built-in read/edit',
   replaceBuiltinEditDesc: 'Let each allowed agent use Hashline read/edit; the replacement edit only accepts line-hash anchors from the latest read output and rejects literal replacement parameters. Disabling restores the original tools.',
+  replaceBuiltinEditInHeadless: 'Replace built-in read/edit in headless mode',
+  replaceBuiltinEditInHeadlessDesc: 'Applies only to headless callers such as Open Design. Replace built-in read/edit must also be enabled; when this is off, explicit hashline_read/hashline_edit remain available. Off by default.',
   promptGuidance: 'Inject tool-selection guidance',
   promptGuidanceDesc: 'Explain when to use Hashline reading and editing in the system prompt.',
   zhPrompt: 'Chinese prompt text',
@@ -333,6 +339,7 @@ function hasOwn(value: unknown, key: string): boolean {
 interface SettingsValue {
   enabled: boolean
   replaceBuiltinEdit: boolean
+  replaceBuiltinEditInHeadless: boolean
   promptGuidance: boolean
   zhPrompt: boolean
   hashLength: number
@@ -346,6 +353,7 @@ function normalized(value: unknown): SettingsValue {
   return {
     enabled: typeof source.enabled === 'boolean' ? source.enabled : DEFAULTS.enabled,
     replaceBuiltinEdit: typeof source.replaceBuiltinEdit === 'boolean' ? source.replaceBuiltinEdit : DEFAULTS.replaceBuiltinEdit,
+      replaceBuiltinEditInHeadless: typeof source.replaceBuiltinEditInHeadless === 'boolean' ? source.replaceBuiltinEditInHeadless : DEFAULTS.replaceBuiltinEditInHeadless,
       promptGuidance: typeof source.promptGuidance === 'boolean' ? source.promptGuidance : DEFAULTS.promptGuidance,
       zhPrompt: typeof source.zhPrompt === 'boolean' ? source.zhPrompt : DEFAULTS.zhPrompt,
     hashLength: source.hashLength !== undefined ? source.hashLength as number : DEFAULTS.hashLength,
@@ -504,6 +512,11 @@ function createCard(scope: any, t: (key: string) => string): () => any {
           field: 'replaceBuiltinEdit', value: draft.replaceBuiltinEdit, disabled: !editable,
           overridden: hasOwn(snapshot.user, 'replaceBuiltinEdit'),
           onChange: function (next: boolean) { change('replaceBuiltinEdit', next) },
+        }),
+        h(ToggleRow, {
+          field: 'replaceBuiltinEditInHeadless', value: draft.replaceBuiltinEditInHeadless, disabled: !editable,
+          overridden: hasOwn(snapshot.user, 'replaceBuiltinEditInHeadless'),
+          onChange: function (next: boolean) { change('replaceBuiltinEditInHeadless', next) },
         }),
         h(ToggleRow, {
           field: 'promptGuidance', value: draft.promptGuidance, disabled: !editable,

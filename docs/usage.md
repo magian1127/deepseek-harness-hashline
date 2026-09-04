@@ -12,6 +12,7 @@
 | `hashline_edit` | 锚定-only 编辑：`edits` 必填，只接受 `set_line` / `replace_lines` / `insert_after`；简单字面替换用内置 `edit` |
 
 开启“替换内置读写”后，工具以 `read` / `edit` 名称出现，`edit` 与全局 `hashline_edit` 是同一锚定-only 契约。
+Open Design/headless 默认不执行同名替换：只有“替换内置读写”和默认关闭的“无头模式替换内置读写”同时开启时，才把无头会话的 `read` / `edit` 换成 Hashline；门控关闭时显式 `hashline_read` / `hashline_edit` 仍可用。
 
 ## 读取
 
@@ -140,6 +141,7 @@ bundle 默认值来自插件源码的配置 schema（`src/index.ts` 的 `createC
 | --- | ---: | --- |
 | `enabled` | true | 全局启停两个 Hashline 工具及提示词；设置卡片保持可用 |
 | `replaceBuiltinEdit` | false | 在允许编辑的智能体作用域替换内置 `read` / `edit`；替换后的 `edit` 强制使用最新 `LINE:HASH`，不公开文本替换或 `replace`。**极简模式（minimal 预设）下不替换**：仅在 Agent 作用域隐藏全局 `hashline_read` / `hashline_edit` |
+| `replaceBuiltinEditInHeadless` | false | 门控 Open Design 的 `open-design` stdio 与 DSH `headless` 中的同名替换；需与 `replaceBuiltinEdit` 同时开启。关闭时保留原版 `read` / `edit` 与显式 `hashline_read` / `hashline_edit` |
 | `promptGuidance` | true | 是否注册简短工具选用提示；替换内置读写开启时，提示以同名 section 阴影在 Agent 作用域替换内置 `read` / `edit` 原提示 |
 | `zhPrompt` | false | 提示词中文化：注入的提示词、工具说明、错误消息与工具输出文案改为中文，工具名保持英文 |
 | `hashLength` | 4 | 3–16 位十六进制哈希；改变后旧锚点全部失效 |
@@ -147,10 +149,8 @@ bundle 默认值来自插件源码的配置 schema（`src/index.ts` 的 `createC
 | `maxLineLength` | 500 | 单行显示截断阈值，哈希仍覆盖完整行 |
 | `contextLines` | 2 | 首个变更点前后的上下文行数，范围 0–20；编辑成功文本会标注窗口范围（如 `lines 2-6 of 6`）并指引重读全文件，避免把局部预览误读为缺行 |
 
-`cordis.patch.yml` 本身不含配置值，默认值由配置 schema 提供。在“设置 → 插件 → 插件配置 → 哈希锚点编辑”中可保存用户覆盖；
-“恢复默认值”会清除用户层字段并恢复 schema 默认值。设置实时生效。
+`cordis.patch.yml` 不含配置值，默认值由 schema 提供。Web 设置卡保存到全局 `hashline` 命名空间；同一 `${DSH_HOME:-~/.dsh}` 下的 `open-design` 与 `headless` 短进程会读取同一设置。
 
-替换模式只在智能体原本能看到 `read`、`edit`、`hashline_read`、`hashline_edit` 时安装，避免绕过配置的
-工具限制；若同一智能体已有其它作用域的 `read` 或 `edit`，插件保留该定义并回滚整组替换、记录告警。
-新建的子智能体同样遵循此规则。也可在 profile 的 `cordis.patch.yml` 中按 id `tool-hashline` 覆盖整行配置
-（DSH patch 会替换完整 `config`，不会深度合并，覆盖时应重述所有需要保留的字段）。
+替换只在四个相关工具原本均可见时安装；冲突时整组回滚。DSH headless 由 `headlessStartup`、Open Design stdio 由 `openDesignStartup` 识别，两者都额外要求 `replaceBuiltinEditInHeadless=true`；该门控不关闭全局 `hashline_*`。
+
+新建子智能体同样遵循此规则。profile 覆盖 `tool-hashline.config` 时需重述完整配置。bundle 按 profile 隔离：Open Design 必须安装到 `open-design`，stock headless 必须安装到 `headless`。

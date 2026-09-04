@@ -113,6 +113,7 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
     value: {
       enabled: true,
       replaceBuiltinEdit: false,
+      replaceBuiltinEditInHeadless: false,
       promptGuidance: true,
       hashLength: 4,
       readLimit: 2000,
@@ -122,6 +123,7 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
     base: {
       enabled: true,
       replaceBuiltinEdit: false,
+      replaceBuiltinEditInHeadless: false,
       promptGuidance: true,
       hashLength: 4,
       readLimit: 2000,
@@ -201,8 +203,10 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
   assert.deepEqual(Object.keys(zhDictionary).sort(), Object.keys(enDictionary).sort())
   assert.equal(zhDictionary.title, '哈希锚点编辑')
   assert.equal(zhDictionary.replaceBuiltinEdit, '替换内置读写')
+  assert.equal(zhDictionary.replaceBuiltinEditInHeadless, '无头模式替换内置读写')
   assert.equal(enDictionary.title, 'Hashline editing')
   assert.equal(enDictionary.replaceBuiltinEdit, 'Replace built-in read/edit')
+  assert.equal(enDictionary.replaceBuiltinEditInHeadless, 'Replace built-in read/edit in headless mode')
   assert.equal(enDictionary.save, 'Save')
   assert.equal(slotRegistrations.length, 3)
   assert.deepEqual(slotRegistrations[0].options, {
@@ -226,11 +230,22 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
 
   tree = reactHarness.render(Card)
   nodes = flatten(tree)
-  assert.equal(nodes.filter(node => node?.type === 'input' && node.props.type === 'checkbox').length, 4)
+  const toggles = nodes.filter(node => node?.type === 'input' && node.props.type === 'checkbox')
+  assert.equal(toggles.length, 5)
+  assert.deepEqual(toggles.map(node => node.props['aria-label']), [
+    'enabled',
+    'replaceBuiltinEdit',
+    'replaceBuiltinEditInHeadless',
+    'promptGuidance',
+    'zhPrompt',
+  ])
   assert.equal(nodes.filter(node => node?.type === 'input' && node.props.type === 'number').length, 4)
 
   const enabled = nodes.find(node => node?.type === 'input' && node.props['aria-label'] === 'enabled')
   enabled.props.onChange({ target: { checked: false } })
+  const replaceInHeadless = nodes.find(node => node?.type === 'input' && node.props['aria-label'] === 'replaceBuiltinEditInHeadless')
+  assert.equal(replaceInHeadless.props.checked, false)
+  replaceInHeadless.props.onChange({ target: { checked: true } })
   tree = reactHarness.render(Card)
   nodes = flatten(tree)
   const save = nodes.find(node => node?.type === 'button' && node.props.children === 'save')
@@ -239,7 +254,7 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
   save.props.onClick()
   await Promise.resolve()
   await Promise.resolve()
-  assert.deepEqual(setCalls, [['enabled', false]])
+  assert.deepEqual(setCalls, [['enabled', false], ['replaceBuiltinEditInHeadless', true]])
   assert.deepEqual(unsetCalls, [])
 
   acceptWrites = false
@@ -680,6 +695,7 @@ test('客户端配置卡片包含全局、替换、提示词、中文化和四�
   for (const field of [
     'enabled',
     'replaceBuiltinEdit',
+      'replaceBuiltinEditInHeadless',
     'promptGuidance',
     'zhPrompt',
     'hashLength',

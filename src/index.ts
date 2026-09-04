@@ -58,6 +58,7 @@ export function createConfigSchema(z: SchemaFactory): unknown {
   return z.object({
     enabled: z.boolean().default(true),
     replaceBuiltinEdit: z.boolean().default(false),
+    replaceBuiltinEditInHeadless: z.boolean().default(false),
     hashLength: z.number().step(1).min(3).max(16).default(DEFAULT_HASH_LENGTH),
     readLimit: z.number().step(1).min(1).default(DEFAULT_READ_LIMIT),
     maxLineLength: z.number().step(1).min(1).default(DEFAULT_MAX_LINE_LENGTH),
@@ -263,6 +264,7 @@ interface AgentPresetsService {
 interface ResolvedConfig {
   enabled: boolean
   replaceBuiltinEdit: boolean
+  replaceBuiltinEditInHeadless: boolean
   hashLength: number
   readLimit: number
   maxLineLength: number
@@ -274,6 +276,7 @@ interface ResolvedConfig {
 const CONFIG_KEYS = [
   'enabled',
   'replaceBuiltinEdit',
+  'replaceBuiltinEditInHeadless',
   'hashLength',
   'readLimit',
   'maxLineLength',
@@ -343,6 +346,7 @@ function resolveConfig(config: Record<string, unknown> = {}): ResolvedConfig {
 
   const enabled = config.enabled ?? true
   const replaceBuiltinEdit = config.replaceBuiltinEdit ?? false
+  const replaceBuiltinEditInHeadless = config.replaceBuiltinEditInHeadless ?? false
 
   const hashLength = config.hashLength ?? DEFAULT_HASH_LENGTH
   const readLimit = config.readLimit ?? DEFAULT_READ_LIMIT
@@ -356,6 +360,9 @@ function resolveConfig(config: Record<string, unknown> = {}): ResolvedConfig {
   }
   if (typeof replaceBuiltinEdit !== 'boolean') {
     throw new HashlineError('HASHLINE_INVALID_CONFIG', 'replaceBuiltinEdit must be a boolean')
+  }
+  if (typeof replaceBuiltinEditInHeadless !== 'boolean') {
+    throw new HashlineError('HASHLINE_INVALID_CONFIG', 'replaceBuiltinEditInHeadless must be a boolean')
   }
 
   if (!Number.isInteger(hashLength) || (hashLength as number) < 3 || (hashLength as number) > 16) {
@@ -376,6 +383,7 @@ function resolveConfig(config: Record<string, unknown> = {}): ResolvedConfig {
   return {
     enabled,
     replaceBuiltinEdit,
+    replaceBuiltinEditInHeadless,
     hashLength: hashLength as number,
     readLimit: readLimit as number,
     maxLineLength: maxLineLength as number,
@@ -1530,6 +1538,7 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
   ctx.inject(['hmr'], (hotContext) => installHostHotReload(hotContext as DshContext))
   const baseConfig = resolveConfig(config)
   const sandbox = createSandboxController(ctx)
+  let headlessMode = ctx.get('headlessStartup') !== undefined || ctx.get('openDesignStartup') !== undefined
 
   // Config schema 从 profile 解析 schemastery 构造（与主进程同一实例）。
   // profile 不可用时降级：不注册 settings UI，工具按传入配置工作。
@@ -1574,6 +1583,18 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
     }
   }
 
+  /** Web/其它 Host 沿用 replaceBuiltinEdit；headless 还需显式开启安全门。 */
+  function replacementEnabled(options: ResolvedConfig): boolean {
+    return options.replaceBuiltinEdit && (!headlessMode || options.replaceBuiltinEditInHeadless)
+  }
+
+  /** 全局提示必须描述当前运行态的有效工具名，而不是未生效的原始设置。 */
+  function globalSurfaceOptions(options: ResolvedConfig): ResolvedConfig {
+    return replacementEnabled(options) === options.replaceBuiltinEdit
+      ? options
+      : { ...options, replaceBuiltinEdit: false }
+  }
+
   function installReplacement(agent: Agent): void {
     // 先撤销该 agent 已安装的表面(替换或极简 deny),再按当前 preset 重装。
     // 支撑会话中途 recompose(如 cordis -> minimal)后工具面的重新评估。
@@ -1603,7 +1624,7 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
     }
     // 未开启“替换原版工具”:非极简 Agent 不做任何 own-scope 表面,全局
     // hashline_read/hashline_edit 按插件 enabled 自然可见。
-    if (!current.replaceBuiltinEdit) return
+    if (!replacementEnabled(current)) return
     // Preserve preset policy: an own-layer tool must not revive a built-in
     // read/edit or a hashline capability that the agent's inherited view hid.
     if (
@@ -1652,13 +1673,14 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
 
   function registerGlobalSurface(options: ResolvedConfig): Array<() => void> {
     const added: Array<() => void> = []
+    const effective = globalSurfaceOptions(options)
     try {
       // 全局读取入口始终配对全局 hashline_edit。只有替换确实安装成功的
       // Agent scoped read 才在 installReplacement 中配对严格 edit。
-      added.push(ctx.tools.register(createReadTool(ctx, toEditOptions(options), 'hashline_edit')))
-      added.push(ctx.tools.register(createEditTool(ctx, toEditOptions(options), sandbox, 'hashline_edit', 'hashline_read')))
-      if (options.promptGuidance && !options.replaceBuiltinEdit) {
-        added.push(ctx.systemPrompt.section({ name: 'tool:hashline', order: 103, text: guidanceText(options) }))
+      added.push(ctx.tools.register(createReadTool(ctx, toEditOptions(effective), 'hashline_edit')))
+      added.push(ctx.tools.register(createEditTool(ctx, toEditOptions(effective), sandbox, 'hashline_edit', 'hashline_read')))
+      if (effective.promptGuidance && !effective.replaceBuiltinEdit) {
+        added.push(ctx.systemPrompt.section({ name: 'tool:hashline', order: 103, text: guidanceText(effective) }))
       }
       return added
     } catch (error) {
@@ -1745,6 +1767,16 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
       ctx.logger?.warn?.(`dsh-hashline: agent-preset/selected 监听失败: ${errorMessage(error)}`)
     }
   })
+
+  // dsh-headless 与 Open Design stdio 分别提供 headlessStartup/openDesignStartup。
+  // 两者都可能晚于本行激活；服务出现时在对应 runner 创建 Agent 前重建表面。
+  const activateHeadlessMode = () => {
+    if (headlessMode || stopped) return
+    headlessMode = true
+    refresh((settings === undefined ? baseConfig : settings.get()) as Record<string, unknown>)
+  }
+  ctx.inject(['headlessStartup'], activateHeadlessMode)
+  ctx.inject(['openDesignStartup'], activateHeadlessMode)
 
   refresh((settings === undefined ? baseConfig : settings.get()) as Record<string, unknown>)
 }

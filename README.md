@@ -26,6 +26,7 @@ CRLF/LF 或空白漂移时的机械可靠性问题。
 数字键、变体空壳）只要无歧义就会被自动回收并在结果中注明，无法恢复时报错附带结构指纹与
 正确形状模板。开启“替换内置读写”后，允许编辑的智能体改用同名严格锚定的
 `read` / `edit`，行为与全局工具完全一致。
+Open Design（`open-design` profile）与 DSH 一次性 `headless` 默认仍使用原版 `read` / `edit`；只有额外开启默认关闭的“无头模式替换内置读写”后，严格替换才在这些无头会话生效，显式 `hashline_*` 在门控关闭时仍可用。
 
 ## 功能
 
@@ -39,46 +40,42 @@ CRLF/LF 或空白漂移时的机械可靠性问题。
 | 文本保真 | 保留 UTF-8 BOM、LF/CRLF、mixed EOL 未触及区域和文件末尾换行状态 |
 | 失效恢复 | 唯一哈希匹配自动重定位；否则返回附近当前行，坏锚点报错回显真实锚点 |
 | 原生结果卡片 | 读取成功复用 DSH 原生 `ReadBlock`：完整 `LINE|HASH` 为灰色不可选 gutter，正文独立可选并保留语法高亮；编辑成功显示原生风格 diff 卡，删除/新增行以灰色不可选 `-行号|旧HASH` / `+行号|新HASH` gutter 开头（行号为对应旧/新文件中的 1 基行号），正文保持原生红绿语义 |
-| 可逆严格替换 | 开启“替换内置读写”后，Agent scoped `edit` 只接受最新 `LINE:HASH` 锚点；覆盖可逆并随 Cordis Fiber 清理 |
+| 可逆严格替换 | 开启“替换内置读写”后，Agent scoped `edit` 只接受最新 `LINE:HASH`；Open Design/DSH headless 还需开启默认关闭的无头门控；覆盖可逆并随 Cordis Fiber 清理 |
 | 提示词中文化 | 开启后注入的提示词、工具说明、错误消息与工具输出文案改为中文，工具名保持英文 |
 
 ## 环境要求
 
-- DeepSeek Harness ≥ 0.1.2-rc.1，默认 profile 为 `web`
+- DeepSeek Harness ≥ 0.1.2-rc.1；Web GUI 使用 `web` profile，Open Design stdio 使用 `open-design` profile，DSH 一次性任务使用 `headless` profile
 - Node.js `^22.19.0 || >=24.0.0`
-- 网页配置卡片还要求 DSH 包含 `settings.register(..., { exposeToClients: true })` 支持
+- 网页配置卡片还要求 DSH 包含 `settings.register(..., { exposeToClients: true })`；`open-design`/`headless` 只运行 Host 半边
 
 ## 安装
 
-推荐使用本插件的统一安装 CLI（与 `deepseek-harness-zh_pro`、`deepseek-harness-zhipu_plan_tools` 的
-`node bin/dsh-*.mjs install` 风格一致）。首次源码联调先安装依赖并生成运行产物（`npm install` 会执行
-`prepare` 自动构建；源码更新后重新构建）：
+DSH 的 bundle 按 profile 隔离，因此 Web、Open Design 与 stock headless 必须分别安装。Web 可使用本插件 CLI；无头 profile 使用官方 `dsh plugin`。首次源码联调先安装依赖并生成运行产物：
 
 ```powershell
 npm install
 npm run build
 
+# Web GUI
 node bin/dsh-hashline.mjs install --profile web --link $PWD
+
+# Open Design 的真实 stdio profile
+dsh plugin --profile open-design add "link:$PWD"
+
+# 可选：DSH 自带的一次性 headless profile
+dsh plugin --profile headless add "link:$PWD"
 ```
 
-`--link` 必须指向本插件源码目录；它等价于 `dsh plugin --profile web add "link:<绝对路径>/deepseek-harness-hashline"`。
-DSH 依据包的 `dsh.bundle` 声明把本包装进 profile 的 `dsh.profile.bundles`，重启一次 `dsh web` 后自动挂载
-（本插件不做热行部署，也不复制 dsh-zh 的热安装监督器）。
+`--link` 必须指向本插件源码目录。三种安装都只写目标 profile 的持久 bundle；`open-design`/`headless` 的下一次短进程自然加载，不依赖 3080 Web 探测或 HMR。
 
-> ⚠️ `link:` 目标目录不存在时，DSH 会把本包判为普通依赖：既不报错，也无法挂载（`dsh.profile.bundles`
-> 不会包含它）。安装后用 `status` 确认通道就绪：
+> ⚠️ `link:` 目标目录不存在时，DSH 会把本包判为普通依赖：既不报错，也无法加入 `dsh.profile.bundles`。安装后分别确认：
 
 ```powershell
 node bin/dsh-hashline.mjs status --profile web
-#  依赖:      link:.../deepseek-harness-hashline
-#  bundle 通道: 已就绪（重启自动挂载）   ← 此行应为“已就绪”
-```
-
-也可以手动使用底层命令并检查组合：
-
-```powershell
-dsh plugin --profile web add "link:<绝对路径>/deepseek-harness-hashline"
-dsh --profile web --dump-config
+dsh plugin --profile open-design list
+dsh --profile open-design --dump-default-config
+dsh plugin --profile headless list
 ```
 
 ## 更新
@@ -90,17 +87,17 @@ dsh --profile web --dump-config
 
 ```powershell
 node bin/dsh-hashline.mjs remove --profile web
-# 等价于：dsh plugin --profile web remove deepseek-harness-hashline
+dsh plugin --profile open-design remove deepseek-harness-hashline
+dsh plugin --profile headless remove deepseek-harness-hashline
 ```
 
-卸载会清理持久 bundle 与运行中条目，不会删除 DSH 会话数据。`settings` 命名空间 `hashline` 中已有的
-用户覆盖值可能保留，重新安装后可继续使用。
+卸载按 profile 独立清理持久 bundle 与运行中条目，不会删除 DSH 会话数据。`settings` 命名空间 `hashline` 中已有的用户覆盖值可能保留，重新安装后可继续使用。
 
 ## 设置与数据
 
 | 数据 | 存储位置 |
 | --- | --- |
-| 启用、替换内置读写、工具选择提示、提示词语言及四个哈希/读取参数 | DSH `settings` 命名空间 `hashline`（在“设置 → 插件 → 插件配置”中编辑） |
+| 启用、替换内置读写、无头模式替换门控、工具选择提示、提示词语言及四个哈希/读取参数 | DSH `settings` 命名空间 `hashline`（在“设置 → 插件 → 插件配置”中编辑） |
 
 插件不注册模型工具以外的额外能力、不上传数据、不维护独立数据文件。客户端只向现有
 `settings.plugin.item` Slot 贡献配置卡片，通过 DSH `settingsScope` 读写同一 Host 命名空间。
@@ -120,10 +117,9 @@ node bin/dsh-hashline.mjs remove --profile web
 `offset`/`limit` 即可分窗口读取任意大小的文件，窗口读取与编辑均不受整文件大小限制（单条 `new_text`
 仍受 50 KiB 上限约束）。
 
-**“替换内置读写”怎么用？** 开启后，允许编辑的智能体看到的是严格锚定的 `read` / `edit`，
-`hashline_read` / `hashline_edit` 被隐藏。每次修改先用 `read` 获取最新锚点；`edit.edits` 的每项是扁平对象——`op` 取
-  `set_line`、`replace_lines` 或 `insert_after`，配 `anchor`（或 `start_anchor`+`end_anchor`）与 `new_text`。关闭开关恢复原工具。
-替换只在智能体原本能看到四个相关工具时安装，避免绕过配置限制；系统提示也在该智能体作用域内同步替换，关闭后恢复。**极简模式（minimal 预设）下不安装替换**：插件只在该智能体作用域隐藏全局 `hashline_read` / `hashline_edit`，保持“仅持久 shell + str_replace_editor”的双工具组合不被第三方能力突破；该隐藏**不依赖“替换原版工具”开关**，关闭替换后对极简 agent 同样生效。
+**“替换内置读写”怎么用？** 开启后，允许编辑的智能体看到的是严格锚定的 `read` / `edit`，`hashline_read` / `hashline_edit` 被隐藏。每次修改先用 `read` 获取最新锚点；`edit.edits` 的每项是扁平对象——`op` 取 `set_line`、`replace_lines` 或 `insert_after`，配 `anchor`（或 `start_anchor`+`end_anchor`）与 `new_text`。关闭开关恢复原工具。
+
+Open Design 的 `open-design` stdio profile 与 DSH 的 `headless` profile 都必须同时开启紧随其后的“无头模式替换内置读写”（默认关闭）。门控关闭时保留原版 `read` / `edit`，同时仍可显式调用 `hashline_read` / `hashline_edit`。替换只在四个相关工具原本均可见时安装；**minimal 预设仍不安装替换**，并继续隐藏全局 Hashline 工具。
 
 ## 开发文档
 
