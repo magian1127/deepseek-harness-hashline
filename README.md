@@ -45,7 +45,7 @@ Open Design（`open-design` profile）与 DSH 一次性 `headless` 默认仍使�
 
 ## 环境要求
 
-- DeepSeek Harness ≥ 0.1.2-rc.1；Web GUI 使用 `web` profile，Open Design stdio 使用 `open-design` profile，DSH 一次性任务使用 `headless` profile
+- DeepSeek Harness ≥ 0.1.5-rc.1；Web GUI 使用 `web` profile，Open Design stdio 使用 `open-design` profile，DSH 一次性任务使用 `headless` profile
 - Node.js `^22.19.0 || >=24.0.0`
 - 网页配置卡片还要求 DSH 包含 `settings.register(..., { exposeToClients: true })`；`open-design`/`headless` 只运行 Host 半边
 

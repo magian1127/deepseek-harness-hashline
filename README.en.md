@@ -36,7 +36,7 @@ Open Design (profile `open-design`) and DSH one-shot `headless` keep the origina
 
 ## Requirements
 
-- DeepSeek Harness ≥ 0.1.2-rc.1; the Web GUI uses `web`, Open Design stdio uses `open-design`, and DSH one-shot tasks use `headless`
+- DeepSeek Harness ≥ 0.1.5-rc.1; the Web GUI uses `web`, Open Design stdio uses `open-design`, and DSH one-shot tasks use `headless`
 - Node.js `^22.19.0 || >=24.0.0`
 - The Web card also requires `settings.register(..., { exposeToClients: true })`; `open-design`/`headless` run the Host half only
 
