@@ -459,36 +459,44 @@ export function parseEditEntries(rawEdits: RawEdit[], zhPrompt?: boolean): Parse
     fail('HASHLINE_INVALID_ARGUMENT', messageText(zhPrompt, 'edits must be a non-empty array', 'edits 必须是非空数组'))
   }
 
-  return rawEdits.map((entry, order) => {
-    if (!isPlainObject(entry)) {
-      fail('HASHLINE_INVALID_ARGUMENT', messageText(zhPrompt,
-        `edits[${order}] must be an object with exactly one variant`,
-        `edits[${order}] 必须是恰好包含一个变体的对象`))
-    }
-    const keys = Object.keys(entry)
-    const variantKeys = keys.filter((key) => (EDIT_KINDS as readonly string[]).includes(key))
-    if (variantKeys.length === 1 && !keys.includes('op')) {
-      return parseNestedVariantEntry(entry, variantKeys[0] as EditKind, order, zhPrompt)
-    }
-    if (variantKeys.length === 0 && keys.includes('op')) {
-      return parseFlatEditEntry(entry, order, zhPrompt)
-    }
-    if (keys.includes('op')) {
+    return rawEdits.map((rawEntry, order) => {
+      // RawEdit 是 union，方言回收需要按字段存在性路由，先统一为记录视图。
+      const entry = rawEntry as unknown as Record<string, unknown>
+      if (!isPlainObject(entry)) {
+        fail('HASHLINE_INVALID_ARGUMENT', messageText(zhPrompt,
+          `edits[${order}] must be an object with exactly one variant`,
+          `edits[${order}] 必须是恰好包含一个变体的对象`))
+      }
+      const keys = Object.keys(entry)
+      const variantKeys = keys.filter((key) => (EDIT_KINDS as readonly string[]).includes(key))
+      if (variantKeys.length === 1 && !keys.includes('op')) {
+        return parseNestedVariantEntry(entry, variantKeys[0] as EditKind, order, zhPrompt)
+      }
+      if (variantKeys.length === 0 && keys.includes('op')) {
+        return parseFlatEditEntry(entry, order, zhPrompt)
+      }
+      // op 缺省的扁平项（忘传 op 的常见方言）：无变体键但携带锚点/新文本字段，
+      // 交给 parseFlatEditEntry 做无歧义形状推断或给出指向性错误。
+      if (variantKeys.length === 0 && !keys.includes('op') &&
+        (entry.anchor !== undefined || entry.start_anchor !== undefined || entry.end_anchor !== undefined || entry.new_text !== undefined)) {
+        return parseFlatEditEntry(entry, order, zhPrompt)
+      }
+      if (keys.includes('op') || entry.anchor !== undefined || entry.start_anchor !== undefined || entry.end_anchor !== undefined || entry.new_text !== undefined) {
+        fail(
+          'HASHLINE_INVALID_ARGUMENT',
+          messageText(zhPrompt,
+            `edits[${order}] mixes the flat "op"/anchor fields with variant key(s) [${variantKeys.join(', ')}]; use exactly one form per element`,
+            `edits[${order}] 混用了扁平 "op"/锚点字段与变体键([${variantKeys.join(', ')}]);每个元素只能使用一种形式`),
+        )
+      }
       fail(
         'HASHLINE_INVALID_ARGUMENT',
         messageText(zhPrompt,
-          `edits[${order}] mixes the flat "op" field with variant key(s) [${variantKeys.join(', ')}]; use exactly one form per element`,
-          `edits[${order}] 混用了扁平 "op" 字段与变体键([${variantKeys.join(', ')}]);每个元素只能使用一种形式`),
+          `edits[${order}] must contain exactly one variant (${EDIT_KINDS.join(' | ')}); put each operation in its own edits array element`,
+          `edits[${order}] 必须恰好包含一个变体(${EDIT_KINDS.join(' | ')});每个操作放入独立的 edits 数组元素`),
       )
-    }
-    fail(
-      'HASHLINE_INVALID_ARGUMENT',
-      messageText(zhPrompt,
-        `edits[${order}] must contain exactly one variant (${EDIT_KINDS.join(' | ')}); put each operation in its own edits array element`,
-        `edits[${order}] 必须恰好包含一个变体(${EDIT_KINDS.join(' | ')});每个操作放入独立的 edits 数组元素`),
-    )
-  })
-}
+    })
+  }
 
 /** 扁平形状允许的字段按 op 匹配（0.3.0 起 schema 主形状）。 */
 const FLAT_EDIT_KEYS: Readonly<Record<EditKind, readonly string[]>> = {
@@ -497,14 +505,34 @@ const FLAT_EDIT_KEYS: Readonly<Record<EditKind, readonly string[]>> = {
   insert_after: ['op', 'anchor', 'new_text'],
 }
 
-/** 解析扁平形状：`{"op":"set_line","anchor":"42:f7a9","new_text":"..."}`。 */
+/** 解析扁平形状：`{"op":"set_line","anchor":"42:f7a9","new_text":"..."}`。
+ * op 缺省时按字段形状无歧义推断：`{anchor,new_text}` → set_line（观察到的失败
+ * 样本里忘传 op 的意图几乎都是 set_line），`{start_anchor,end_anchor,new_text}` →
+ * replace_lines（字段签名唯一）；带 op 但值无效仍响亮拒绝，缺字段不猜。 */
 function parseFlatEditEntry(entry: Record<string, unknown>, order: number, zhPrompt?: boolean): ParsedEdit {
   const label = `edits[${order}]`
   const op = entry.op
-  if (typeof op !== 'string' || !(EDIT_KINDS as readonly string[]).includes(op)) {
-    fail('HASHLINE_INVALID_ARGUMENT', messageText(zhPrompt, `${label}.op must be one of ${EDIT_KINDS.join(' | ')}`, `${label}.op 必须是 ${EDIT_KINDS.join(' | ')} 之一`))
+  const hasStartEnd = entry.start_anchor !== undefined || entry.end_anchor !== undefined
+  const hasAnchor = entry.anchor !== undefined
+  if (op === undefined) {
+    // 形状无歧义才推断：双锚点字段只属于 replace_lines；单 anchor 属于 set_line
+    //（insert_after 与 set_line 字段签名相同，无法区分，默认 set_line）。推断后
+    // 继续走统一校验，字段缺失仍按原错误路径响亮拒绝。
+    if (hasStartEnd && !hasAnchor) return parseFlatEditEntry({ ...entry, op: 'replace_lines' }, order, zhPrompt)
+    if (hasAnchor && !hasStartEnd) return parseFlatEditEntry({ ...entry, op: 'set_line' }, order, zhPrompt)
+    if (hasStartEnd && hasAnchor) {
+      fail('HASHLINE_INVALID_ARGUMENT', messageText(zhPrompt,
+        `${label} is missing "op" and mixes anchor with start_anchor/end_anchor; use op="replace_lines" with start_anchor+end_anchor, or op="set_line"/"insert_after" with anchor`,
+        `${label} 缺少 "op" 且混用了 anchor 与 start_anchor/end_anchor;replace_lines 用 start_anchor+end_anchor，set_line/insert_after 用 anchor`))
+    }
+    fail('HASHLINE_INVALID_ARGUMENT', messageText(zhPrompt,
+      `${label} is missing "op"; use op="set_line"/"insert_after" with anchor+new_text, or op="replace_lines" with start_anchor+end_anchor+new_text`,
+      `${label} 缺少 "op";set_line/insert_after 用 anchor+new_text，replace_lines 用 start_anchor+end_anchor+new_text`))
   }
-  const kind = op as EditKind
+    if (typeof op !== 'string' || !(EDIT_KINDS as readonly string[]).includes(op)) {
+      fail('HASHLINE_INVALID_ARGUMENT', messageText(zhPrompt, `${label}.op must be one of ${EDIT_KINDS.join(' | ')}`, `${label}.op 必须是 ${EDIT_KINDS.join(' | ')} 之一`))
+    }
+    const kind = op as EditKind
   assertOnlyKeys(entry, FLAT_EDIT_KEYS[kind], label, zhPrompt)
   if (kind === 'set_line') {
     return {

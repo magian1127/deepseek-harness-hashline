@@ -49,11 +49,16 @@ Open Design/headless 默认不执行同名替换：只有“替换内置读写�
 长行仅截断显示，不截断哈希输入。会话中读取成功会复用原生 `ReadBlock` 的布局、折叠、复制和语法高亮；完整
 `LINE|HASH` 位于同一个灰色、不可选中的 gutter 中，正文位于独立且可选择的 content 区域。将显示分隔符 `|` 换为 `:` 即得到编辑所需的 `LINE:HASH` 锚点。模型-facing envelope 还会报告 `eol` 与 `bom`。
 
+BOM 检测走字节路径：插件优先用 `fs.readBytes` 读取原始字节并自行以 `ignoreBOM` 语义解码（0.3.2 及更早经 `fs.readText` 读取，而 DSH fs-local 的 `readText` 用默认 `TextDecoder` 解码会把 UTF-8 BOM 从返回字符串中剥掉，导致带 BOM 文件被误报 `bom=no` 且编辑后 BOM 静默丢失）；旧 DSH 无 `readBytes` 时回退 `readText`，BOM 保持历史行为。
+
 ## 编辑
 
 `hashline_edit` 是锚定-only 入口（参数根 schema 保持 `type: object`）：`edits` 必填且非空，
 每项是扁平对象——`op` 取 `set_line`、`replace_lines`、`insert_after` 之一，配齐对应锚点字段
-与 `new_text`（op 与字段的匹配在执行层校验）。简单唯一文本替换是内置 `edit`
+与 `new_text`（op 与字段的匹配在执行层校验）。`op` 可缺省：只带 `anchor+new_text` 的项按
+`set_line` 解析（实测忘传 `op` 的会话意图几乎都是 `set_line`），只带
+`start_anchor+end_anchor+new_text` 的项按 `replace_lines` 解析（字段签名唯一）；混用两族
+锚点字段或两者皆缺时拒绝且不写入。简单唯一文本替换是内置 `edit`
 （`old_string` / `new_string`）的职责——传入 `old_string` / `new_string` / `replace_all` 或
 `edits[].replace` 会在任何文件操作前以 `HASHLINE_INVALID_ARGUMENT` 拒绝，并指引改用内置 `edit`。
 
@@ -71,10 +76,14 @@ Open Design/headless 默认不执行同名替换：只有“替换内置读写�
 {
   "file_path": "src/example.js",
   "edits": [
-    { "op": "set_line", "anchor": "2:91aa", "new_text": "  const value = 456" }
+    { "op": "set_line", "anchor": "2:91aa", "new_text": "  const value = 456" },
+    { "anchor": "5:6d21", "new_text": "  const extra = 1" }
   ]
 }
 ```
+
+第二个元素省略了 `op`（只带 `anchor` + `new_text`），按 `set_line` 解析——忘传 `op` 的
+高频方言与显式声明等价。
 
 ### 一次执行多个互不重叠的编辑
 
@@ -91,17 +100,19 @@ Open Design/headless 默认不执行同名替换：只有“替换内置读写�
 ### 方言回收（宽容但可观测）
 
 模型路由/适配器有时会把工具参数结构破坏——字段被提升到参数根（`anchor` / `new_text`
-散落在顶层）、数组项被物化为根级数字键（`"0"` / `"1"`）、变体对象只剩空壳。只要这些
-形状能**无歧义**地恢复出锚定操作，`hashline_edit` 会自动回收并在结果里注明
-`normalizedFrom`（`hoisted-fields` / `numeric-keys` / `deduped` / `top-level`），同一操作
-的多份全等影子折叠为一次写入；字段值冲突或无法归属时拒绝且不写入，错误附带收到的
-结构指纹与可直接复制的正确形状模板。回收不改变安全模型：恢复出的操作仍走同一稳定
-快照校验、重叠拒绝与版本 CAS。
+散落在顶层）、数组项被物化为根级数字键（`"0"` / `"1"`）、变体对象只剩空壳、项内忘传
+`op`。只要这些形状能**无歧义**地恢复出锚定操作，`hashline_edit` 会自动回收并在结果里
+注明 `normalizedFrom`（`hoisted-fields` / `numeric-keys` / `deduped` / `top-level`）；
+`op` 缺省按字段形状推断（`anchor+new_text` → `set_line`，双锚点 → `replace_lines`），
+推断后仍走与显式声明完全相同的字段校验。同一操作的多份全等影子折叠为一次写入；
+字段值冲突、混用两族锚点字段或无法归属时拒绝且不写入，错误附带收到的结构指纹与
+可直接复制的正确形状模板。回收不改变安全模型：恢复出的操作仍走同一稳定快照校验、
+重叠拒绝与版本 CAS。
 
 ## 注意事项
 
 - `old_string` / `new_string` / `replace_all` 与 `edits[].replace` 已在 0.2.0 移除；传给 `hashline_edit` 的实际载荷会被拒绝并指引使用内置 `edit` 做简单字面替换。适配器为未选变体物化的空哨兵（`''` / `false` / 空对象）仍被容忍忽略；自官方 DSH v0.1.2 起，「当前操作未使用字段」的 `null` 占位（含根级 str_replace 字段、跨 op 锚点字段与 `hashline_read` 的 `offset`/`limit`）同样按未提供处理。
-- `edits` 的每个数组项是一个扁平对象：`op` 选择操作，`set_line`/`insert_after` 只允许 `op`、`anchor`、`new_text`，`replace_lines` 只允许 `op`、`start_anchor`、`end_anchor`、`new_text`；传入另一操作的锚点字段（非 `null`）会以 `HASHLINE_INVALID_ARGUMENT` 拒绝，`null` 占位被忽略。多个位置的修改拆成多个数组项。历史嵌套变体形状（`{"set_line": {...}}`）仍被接受用于旧回放。
+- `edits` 的每个数组项是一个扁平对象：`op` 选择操作（可缺省：只带 `anchor+new_text` 按 `set_line`，只带 `start_anchor+end_anchor+new_text` 按 `replace_lines`；混用两族锚点字段拒绝），`set_line`/`insert_after` 只允许 `op`、`anchor`、`new_text`，`replace_lines` 只允许 `op`、`start_anchor`、`end_anchor`、`new_text`；传入另一操作的锚点字段（非 `null`）会以 `HASHLINE_INVALID_ARGUMENT` 拒绝，`null` 占位被忽略。多个位置的修改拆成多个数组项。历史嵌套变体形状（`{"set_line": {...}}`）仍被接受用于旧回放。
 - 锚点分隔符推荐 `:`，直接从读取输出抄来的 `|` 也被接受并等价处理。
 - `set_line` / `replace_lines` 的空 `new_text` 表示删除；要写入一个有行尾的空白行，使用 `"\n"`。
 - `insert_after.new_text` 不允许为空。

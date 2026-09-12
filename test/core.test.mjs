@@ -310,6 +310,36 @@ test('扁平 op 形状：非法 op 与缺字段在写入前拒绝', () => {
   ]), 'HASHLINE_INVALID_ARGUMENT')
 })
 
+test('op 缺省按字段形状无歧义推断：anchor→set_line，双锚点→replace_lines', () => {
+  const content = 'alpha\nbeta\ngamma\n'
+  // 只带 anchor+new_text（无 op）：观察到的忘传 op 意图几乎都是 set_line。
+  assert.equal(apply(content, [
+    { anchor: anchor(content, 2), new_text: 'BETA' },
+  ]), 'alpha\nBETA\ngamma\n')
+  // 只带 start_anchor+end_anchor+new_text（无 op）：字段签名唯一属于 replace_lines。
+  assert.equal(apply(content, [
+    { start_anchor: anchor(content, 1), end_anchor: anchor(content, 2), new_text: 'A2\nB2' },
+  ]), 'A2\nB2\ngamma\n')
+  // 空串 new_text 的删除语义在缺省 op 下同样生效。
+  assert.equal(apply(content, [
+    { anchor: anchor(content, 2), new_text: '' },
+  ]), 'alpha\ngamma\n')
+})
+
+test('op 缺省但形状歧义或字段残缺时拒绝', () => {
+  const content = 'alpha\nbeta\n'
+  // 混用两族锚点字段：无法无歧义归属，拒绝且不写入。
+  expectCode(() => apply(content, [
+    { anchor: anchor(content, 1), start_anchor: anchor(content, 1), end_anchor: anchor(content, 2), new_text: 'x' },
+  ]), 'HASHLINE_INVALID_ARGUMENT')
+  // 无任何字段：既非 op 项也非变体项，维持原有拒绝。
+  expectCode(() => apply(content, [{}]), 'HASHLINE_INVALID_ARGUMENT')
+  // 只带 new_text：缺 op 也缺锚点，指向性错误。
+  expectCode(() => apply(content, [{ new_text: 'x' }]), 'HASHLINE_INVALID_ARGUMENT')
+  // 缺省推断成 set_line 后仍走统一校验：缺 anchor 拒绝。
+  expectCode(() => apply(content, [{ new_text: 'x', op: undefined }]), 'HASHLINE_INVALID_ARGUMENT')
+})
+
 test('锚点接受显示分隔符 | 并与 : 等价', () => {
   const content = 'alpha\nbeta\n'
   const pipeAnchor = anchor(content, 2).replace(':', '|')

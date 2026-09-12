@@ -20,7 +20,11 @@ stale read，并把多处修改作为一个原子请求处理。它不判断代�
   new_text}`，嵌套四层降为两层、无 oneOf 分支）——深层嵌套/oneOf 是模型结构化输出的已知弱点，
   实测失败样本均为「字段提升到参数根、数组项物化为根级数字键、变体空壳」等层级损坏，扁平形状
   在形态上消灭这类错误。op 与字段的匹配在执行层校验；历史嵌套变体形状仍被 `parseEditEntries`
-  接受（旧回放与方言回收）。`normalizeEditRequest` 在此之上做**方言回收**：顶层散落字段、
+  接受（旧回放与方言回收）。`op` 不在 `edits.items.required` 中（schema 里声明 `default: 'set_line'`
+  供支持它的模型路由预填）：忘传 `op` 是实测高频方言且意图几乎都是 `set_line`，执行层按字段
+  形状无歧义推断——只带 `anchor+new_text` 按 `set_line`，只带 `start_anchor+end_anchor+new_text`
+  按 `replace_lines`；推断后仍走与显式声明完全相同的字段校验，混用两族锚点字段或两者皆缺
+  时不猜、拒绝且不写入。`normalizeEditRequest` 在此之上做**方言回收**：顶层散落字段、
   根级数字键影子、项内字段提升、丢失信封的根级单操作，只要能无歧义恢复出锚定操作就接受，
   结果注明 `normalizedFrom`（宽容可观测），全等影子去重；字段冲突或无法归属即拒绝，错误附带
   收到参数的结构指纹（仅键名与形状，不含内容）与 canonical 形状模板。原始
@@ -45,6 +49,13 @@ stale read，并把多处修改作为一个原子请求处理。它不判断代�
 哈希是该行文本与真实行尾连接后的 SHA-256 前缀，默认 4 hex。
 BOM 作为文件元数据单独保存，不进入首行哈希。这样首行显示内容、锚点输入和编辑语义一致，
 而文件级版本 CAS 仍会捕获并发 BOM 变化。
+
+BOM 检测走字节路径：`loadStableFile` 优先用 `fs.readBytes` 读原始字节，检测 `EF BB BF` 前缀后
+以 `TextDecoder({ ignoreBOM: true })` 解码并拼回 U+FEFF。0.3.2 及更早经 `fs.readText` 读取，而
+DSH fs-local 的 `readText` 用默认 `TextDecoder` 解码会把 UTF-8 BOM 从返回字符串里剥掉
+（`ignoreBOM=false` 语义），`splitTextFile` 因此永远看不到 BOM——read 误报 `bom=no`、编辑后
+BOM 静默丢失。旧 DSH 无 `readBytes` 时回退 `readText`（BOM 维持历史行为）；单测的 mock
+`readText` 同步模拟剥 BOM 语义，防止回归。
 
 行号和短哈希联合定位。短哈希不是全局标识，也不能消除碰撞；它主要用于低成本 stale-read
 检测。需要降低碰撞概率时可提高 `hashLength`，代价是每行输出增加 token。
@@ -95,6 +106,8 @@ BOM 作为文件元数据单独保存，不进入首行哈希。这样首行显�
 
 - `sandboxPolicy.resolve({ session })` 获取调用会话的模式和 workspace root；
 - `approval.request(...)` 处理严格更宽的一次性 sandbox 升级；
+- `fs.readBytes(...)` 读原始字节以保真检测/保留 UTF-8 BOM（`fs.readText` 的默认解码会剥 BOM；
+  旧 DSH 无该方法时回退 `readText`，BOM 维持历史行为）；
 - `fs/observed` 同步读写版本；
 - `fs/write-intent` 保留策略组合点；
 - `writeText(..., replaceIfVersion)` 防止校验后到写入前的并发覆盖；

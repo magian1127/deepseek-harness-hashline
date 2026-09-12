@@ -20,10 +20,12 @@ CRLF/LF 或空白漂移时的机械可靠性问题。
 
 `hashline_edit` 是锚定-only 入口：`edits` 必填，每项是扁平对象——`op` 取 `set_line`、
 `replace_lines`、`insert_after` 之一，配 `anchor`（或 `start_anchor`+`end_anchor`）与
-`new_text`；简单唯一文本替换请使用内置 `edit`（`old_string` / `new_string`），新文件用
+`new_text`；`op` 可缺省：只带 `anchor`+`new_text` 时按 `set_line` 解析，只带
+`start_anchor`+`end_anchor`+`new_text` 时按 `replace_lines` 解析（忘传 `op` 的高频方言与
+显式声明等价）。简单唯一文本替换请使用内置 `edit`（`old_string` / `new_string`），新文件用
 `write`。传入 `old_string` / `new_string` / `edits[].replace` 的实际载荷会在任何文件操作前被拒绝并明确
 指引改用内置 `edit`（对齐官方 v0.1.2：未使用字段的 `null` 占位按未提供忽略）。模型/适配器常见的畸形传参（字段被提升到参数根、数组项被物化为根级
-数字键、变体空壳）只要无歧义就会被自动回收并在结果中注明，无法恢复时报错附带结构指纹与
+数字键、变体空壳、忘传 `op`）只要无歧义就会被自动回收并在结果中注明，无法恢复时报错附带结构指纹与
 正确形状模板。开启“替换内置读写”后，允许编辑的智能体改用同名严格锚定的
 `read` / `edit`，行为与全局工具完全一致。
 Open Design（`open-design` profile）与 DSH 一次性 `headless` 默认仍使用原版 `read` / `edit`；只有额外开启默认关闭的“无头模式替换内置读写”后，严格替换才在这些无头会话生效，显式 `hashline_*` 在门控关闭时仍可用。
@@ -34,10 +36,10 @@ Open Design（`open-design` profile）与 DSH 一次性 `headless` 默认仍使�
 | --- | --- |
 | `LINE:HASH` 读取 | `LINE\|HASH  内容` 格式，默认 4 位十六进制 SHA-256 前缀；模型结果同时报告 EOL/BOM |
 | 三种锚定编辑 | `set_line`、`replace_lines`、`insert_after`；`edits` 每项为扁平 `{op, anchor…, new_text}` 对象，执行前校验 op 与字段匹配 |
-| 方言回收 | 顶层散落字段、数字键影子、变体空壳等无歧义畸形传参被自动恢复并在结果注明 `normalizedFrom`；冲突即拒绝且不写入 |
+| 方言回收 | 顶层散落字段、数字键影子、变体空壳、忘传 `op`（按字段形状推断：`anchor+new_text`→`set_line`，双锚点→`replace_lines`）等无歧义畸形传参被自动恢复并在结果注明 `normalizedFrom`；冲突即拒绝且不写入 |
 | 原子批量编辑 | 一次调用全部锚点先校验、重叠先拒绝，再原子写入 |
 | 版本 CAS 保护 | 使用 DSH 文件版本防止校验后到写入前的并发覆盖 |
-| 文本保真 | 保留 UTF-8 BOM、LF/CRLF、mixed EOL 未触及区域和文件末尾换行状态 |
+| 文本保真 | 保留 UTF-8 BOM（字节路径检测：`fs.readBytes` + 保留 BOM 解码，旧 DSH 回退 `readText`）、LF/CRLF、mixed EOL 未触及区域和文件末尾换行状态 |
 | 失效恢复 | 唯一哈希匹配自动重定位；否则返回附近当前行，坏锚点报错回显真实锚点 |
 | 原生结果卡片 | 读取成功复用 DSH 原生 `ReadBlock`：完整 `LINE|HASH` 为灰色不可选 gutter，正文独立可选并保留语法高亮；编辑成功显示原生风格 diff 卡，删除/新增行以灰色不可选 `-行号|旧HASH` / `+行号|新HASH` gutter 开头（行号为对应旧/新文件中的 1 基行号），正文保持原生红绿语义 |
 | 可逆严格替换 | 开启“替换内置读写”后，Agent scoped `edit` 只接受最新 `LINE:HASH`；Open Design/DSH headless 还需开启默认关闭的无头门控；覆盖可逆并随 Cordis Fiber 清理 |

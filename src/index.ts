@@ -124,6 +124,12 @@ interface FsService {
   resolve(path: string, options: Record<string, unknown>): Promise<FsTarget>
   stat(target: FsTarget, signal?: AbortSignal): Promise<FsStat | undefined>
   readText(target: FsTarget, signal?: AbortSignal): Promise<string>
+  /** 自 DSH 引入 readBytes（fs 服务抽象层）起可用；旧 DSH 缺省时回退 readText。 */
+  readBytes?(
+    target: FsTarget,
+    signal: AbortSignal | undefined,
+    maxBytes: number,
+  ): Promise<Uint8Array>
   writeText(
     target: FsTarget,
     content: string,
@@ -534,6 +540,24 @@ interface StableFile {
   content: string
 }
 
+
+/**
+ * 把原始 UTF-8 字节解码为保留 BOM 的字符串：检测 EF BB BF 前缀后用
+ * `TextDecoder({ ignoreBOM: true })` 解码剩余字节，再拼回 U+FEFF。这与 DSH
+ * fs-local `readText` 的默认 TextDecoder（剥 BOM）不同，是 hashline 保真
+ * BOM 元数据与编辑后写回的前提。无效 UTF-8 抛与 DSH 同义的 FS_NOT_TEXT。
+ */
+function decodeBytesPreservingBom(raw: Uint8Array): string {
+  const hasBom = raw.length >= 3 && raw[0] === 0xef && raw[1] === 0xbb && raw[2] === 0xbf
+  const body = hasBom ? raw.subarray(3) : raw
+  try {
+    const decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(body)
+    return hasBom ? `\uFEFF${decoded}` : decoded
+  } catch (error: unknown) {
+    if (!(error instanceof TypeError)) throw error
+    throw hashlineError('HASHLINE_INVALID_ARGUMENT', 'cannot read file: invalid UTF-8 text')
+  }
+}
 async function loadStableFile(
   ctx: DshContext,
   exec: ToolExec,
@@ -561,7 +585,16 @@ async function loadStableFile(
           )
         }
 
-      const content = await ctx.fs.readText(target, exec.signal)
+      // DSH fs-local 的 readText 用默认 TextDecoder 解码，会把 UTF-8 BOM 从
+      // 返回字符串里剥掉（ignoreBOM=false 语义），导致 splitTextFile 永远看不到
+      // BOM、编辑后写回丢失 BOM。改走字节路径自行解码（ignoreBOM=true），保真
+      // 检测 BOM；旧 DSH 无 readBytes 时回退 readText（BOM 保持历史行为）。
+      const readContent = async (): Promise<string> => {
+        if (ctx.fs.readBytes === undefined) return await ctx.fs.readText(target, exec.signal)
+        const raw = await ctx.fs.readBytes(target, exec.signal, loadOptions?.allowLargeFile === true ? MAX_FILE_BYTES * 2 : MAX_FILE_BYTES)
+        return decodeBytesPreservingBom(raw)
+      }
+      const content = await readContent()
       const contentBytes = Buffer.byteLength(content, 'utf8')
       if (!loadOptions?.allowLargeFile && contentBytes > MAX_FILE_BYTES) {
           throw hashlineError(
@@ -671,9 +704,9 @@ function editItemSchema(zhPrompt: boolean, readToolName: string): JsonSchema {
   const anchorDesc = zhPrompt
     ? `从 ${readToolName} 复制的最新 LINE:HASH 锚点，例如 "42:f7a9"；set_line 与 insert_after 必填。`
     : `Fresh LINE:HASH anchor copied from ${readToolName}, for example "42:f7a9"; required for set_line and insert_after.`
-  const opDesc = zhPrompt
-    ? '操作类型：set_line（替换一行，需 anchor+new_text）、replace_lines（替换范围，需 start_anchor+end_anchor+new_text）、insert_after（在锚行后插入，需 anchor+new_text 且非空）。'
-    : 'Operation kind: set_line (replace one line; needs anchor+new_text), replace_lines (replace a range; needs start_anchor+end_anchor+new_text), insert_after (insert after the anchored line; needs anchor+new_text, non-empty).'
+    const opDesc = zhPrompt
+      ? '操作类型：set_line（替换一行，需 anchor+new_text）、replace_lines（替换范围，需 start_anchor+end_anchor+new_text）、insert_after（在锚行后插入，需 anchor+new_text 且非空）。可缺省：只带 anchor+new_text 时按 set_line，只带 start_anchor+end_anchor+new_text 时按 replace_lines。'
+      : 'Operation kind: set_line (replace one line; needs anchor+new_text), replace_lines (replace a range; needs start_anchor+end_anchor+new_text), insert_after (insert after the anchored line; needs anchor+new_text, non-empty). Optional: anchor+new_text alone defaults to set_line; start_anchor+end_anchor+new_text alone defaults to replace_lines.'
   const newTextDesc = zhPrompt
     ? '替换或插入的内容。set_line/replace_lines 空字符串表示删除；insert_after 不允许为空。'
     : 'Replacement or inserted content. An empty string means deletion for set_line/replace_lines; insert_after requires non-empty.'
@@ -682,9 +715,12 @@ function editItemSchema(zhPrompt: boolean, readToolName: string): JsonSchema {
   return {
     type: 'object',
     additionalProperties: false,
-    required: ['op', 'new_text'],
+      // op 不在 required：忘传 op 是实测高频方言（意图几乎都是 set_line），执行层
+      // 按字段形状无歧义推断（anchor→set_line，start_anchor+end_anchor→replace_lines）；
+      // default 声明供支持它的模型路由预填。
+      required: ['new_text'],
     properties: {
-      op: { type: 'string', enum: [...EDIT_KINDS], description: opDesc },
+        op: { type: 'string', enum: [...EDIT_KINDS], default: 'set_line', description: opDesc },
       anchor: { type: 'string', description: anchorDesc },
       start_anchor: { type: 'string', description: startAnchorDesc },
       end_anchor: { type: 'string', description: endAnchorDesc },
@@ -1061,7 +1097,21 @@ function recoverEditFromCandidate(
     kind = rootPool.op as EditKind
     hoisted = true
   }
-  if (kind === undefined) return undefined
+    if (kind === undefined) {
+      // op 缺省方言（与 core parseFlatEditEntry 同规则）：项内/根级均无 op 与变体键
+      // 时，按锚点字段形状无歧义推断——start/end 双锚点只属于 replace_lines；单
+      // anchor 默认 set_line（忘传 op 的意图几乎都是 set_line）。混用两族锚点不猜。
+      const hasStartEnd = source.start_anchor !== undefined || rootPool.start_anchor !== undefined
+        || source.end_anchor !== undefined || rootPool.end_anchor !== undefined
+      const hasAnchor = source.anchor !== undefined || rootPool.anchor !== undefined
+      if (hasStartEnd && !hasAnchor) kind = 'replace_lines'
+      else if (hasAnchor && !hasStartEnd) kind = 'set_line'
+      else if (hasStartEnd && hasAnchor) {
+        invalidArgument(messageText(zhPrompt,
+          `${label} is missing "op" and mixes anchor with start_anchor/end_anchor; use op="replace_lines" with start_anchor+end_anchor, or op="set_line"/"insert_after" with anchor`,
+          `${label} 缺少 "op" 且混用了 anchor 与 start_anchor/end_anchor;replace_lines 用 start_anchor+end_anchor，set_line/insert_after 用 anchor`))
+      } else return undefined
+    }
 
   const fieldLabel = `${label} ${kind}`
   const markHoisted = (field: { hoisted: boolean }): void => {
@@ -1112,8 +1162,8 @@ function editParameters(
       edits: {
         type: 'array',
         description: zhPrompt
-          ? '必填的非空编辑列表。每项是扁平对象：op 取 set_line、replace_lines 或 insert_after，配 anchor（或 start_anchor+end_anchor）与 new_text。'
-          : 'Required non-empty edit list. Each element is a flat object: op is set_line, replace_lines, or insert_after, with anchor (or start_anchor+end_anchor) and new_text.',
+          ? '必填的非空编辑列表。每项是扁平对象：op 取 set_line、replace_lines 或 insert_after，配 anchor（或 start_anchor+end_anchor）与 new_text。op 可缺省：只带 anchor+new_text 时为 set_line，只带 start_anchor+end_anchor+new_text 时为 replace_lines。'
+          : 'Required non-empty edit list. Each element is a flat object: op is set_line, replace_lines, or insert_after, with anchor (or start_anchor+end_anchor) and new_text. op is optional: anchor+new_text alone defaults to set_line; start_anchor+end_anchor+new_text alone defaults to replace_lines.',
         items: editItemSchema(zhPrompt, readToolName),
       },
       ...sandbox.schemaFields,
@@ -1295,8 +1345,8 @@ function createEditTool(
       // 替换形态（toolName=edit）下内置 edit 已被替换，不再出现否定句或
       // “简单字面替换请用内置 edit”指引；全局形态保留该指引（两者并存）。
       description: options.zhPrompt
-        ? `用 ${readToolName} 最新输出中的 LINE:HASH 锚点编辑现有 UTF-8 文本文件。edits 必须非空，每项用 op 选择 set_line、replace_lines 或 insert_after 并配齐锚点字段。${toolName === 'edit' ? '' : '简单字面替换请用内置 edit。'}所有锚点在写入前针对同一稳定快照统一校验。`
-        : `Edit an existing UTF-8 text file with fresh LINE:HASH anchors from ${readToolName}. edits is required and non-empty; each element picks set_line, replace_lines, or insert_after via op with the matching anchor fields.${toolName === 'edit' ? '' : ' Use the built-in edit for a simple unique literal replacement.'} All anchors are verified against one stable snapshot before writing.`,
+          ? `用 ${readToolName} 最新输出中的 LINE:HASH 锚点编辑现有 UTF-8 文本文件。edits 必须非空，每项用 op 选择 set_line、replace_lines 或 insert_after 并配齐锚点字段；op 可缺省（只带 anchor+new_text 时为 set_line）。${toolName === 'edit' ? '' : '简单字面替换请用内置 edit。'}所有锚点在写入前针对同一稳定快照统一校验。`
+          : `Edit an existing UTF-8 text file with fresh LINE:HASH anchors from ${readToolName}. edits is required and non-empty; each element picks set_line, replace_lines, or insert_after via op with the matching anchor fields (op is optional: anchor+new_text alone defaults to set_line).${toolName === 'edit' ? '' : ' Use the built-in edit for a simple unique literal replacement.'} All anchors are verified against one stable snapshot before writing.`,
     parameters: editParameters(sandbox, options.zhPrompt, readToolName),
     output: {
       schema: EDIT_OUTPUT_SCHEMA,
@@ -1388,13 +1438,13 @@ function createEditTool(
 function guidanceText(options: ResolvedConfig): string {
   if (options.zhPrompt) {
     return (
-      '用 hashline_read 后再 hashline_edit（edits）做对同一文件的多次编辑、多处原子编辑，或在字面替换因空白或行尾而脆弱时使用。edits 的每项是 {op, anchor…, new_text} 扁平对象，只放一个操作。' +
+        '用 hashline_read 后再 hashline_edit（edits）做对同一文件的多次编辑、多处原子编辑，或在字面替换因空白或行尾而脆弱时使用。edits 的每项是 {op, anchor…, new_text} 扁平对象，只放一个操作；op 可缺省，只带 anchor+new_text 时按 set_line，只带 start_anchor+end_anchor+new_text 时按 replace_lines。' +
       '从最新输出中精确复制 LINE:HASH 锚点。哈希不匹配意味着未写入；使用错误中给出的更新锚点或重新读取。' +
       '新建文件用 write，简单唯一字面替换用内置 edit。'
     )
   }
   return (
-      'Use hashline_read followed by hashline_edit with edits for repeated edits to the same file, multi-location atomic edits, or when literal replacement is fragile because of whitespace or line endings. Each edits element is one flat {op, anchor…, new_text} object carrying exactly one operation. ' +
+        'Use hashline_read followed by hashline_edit with edits for repeated edits to the same file, multi-location atomic edits, or when literal replacement is fragile because of whitespace or line endings. Each edits element is one flat {op, anchor…, new_text} object carrying exactly one operation; op is optional — anchor+new_text alone defaults to set_line, start_anchor+end_anchor+new_text alone defaults to replace_lines. ' +
     'Copy LINE:HASH anchors exactly from the newest output. A hash mismatch means nothing was written; use the updated anchor in the error or read again. ' +
     'Use write for new files and the built-in edit for a simple unique literal replacement.'
   )
@@ -1431,13 +1481,13 @@ function editGuidanceText(options: ResolvedConfig): string {
   if (options.zhPrompt) {
     return (
       `使用 ${editToolName} 工具对现有 UTF-8 文本文件做严格的哈希锚定修改。` +
-      `先用 ${readToolName} 读取，再从最新输出精确复制 LINE:HASH。edits 的每项是扁平对象：op 取 set_line、replace_lines 或 insert_after，配 anchor（或 start_anchor+end_anchor）与 new_text；多处修改拆成多个数组项。` +
+        `先用 ${readToolName} 读取，再从最新输出精确复制 LINE:HASH。edits 的每项是扁平对象：op 取 set_line、replace_lines 或 insert_after，配 anchor（或 start_anchor+end_anchor）与 new_text；op 可缺省，只带 anchor+new_text 时按 set_line；多处修改拆成多个数组项。` +
       '哈希不匹配意味着未写入；使用错误中的新锚点或重新读取。新建文件用 write。'
     )
   }
   return (
     `Use the ${editToolName} tool for strictly hash-anchored changes to existing UTF-8 text files. ` +
-    `Call ${readToolName} first and copy fresh LINE:HASH anchors exactly. Each edits element is a flat object: op is set_line, replace_lines, or insert_after with anchor (or start_anchor+end_anchor) and new_text; use separate elements for separate changes. ` +
+      `Call ${readToolName} first and copy fresh LINE:HASH anchors exactly. Each edits element is a flat object: op is set_line, replace_lines, or insert_after with anchor (or start_anchor+end_anchor) and new_text; op is optional — anchor+new_text alone defaults to set_line; use separate elements for separate changes. ` +
     'A hash mismatch means nothing was written; use the updated anchor in the error or read again. Use write for new files.'
   )
 }

@@ -131,19 +131,39 @@ function createHarness(options = {}) {
       return exists ? { type: 'file', version: `v${versionNumber}`, size: content.length } : undefined
     },
     async readText() {
-      const result = content
-      if (changeDuringFirstRead) {
-        changeDuringFirstRead = false
-        content = options.changedContent ?? 'changed\n'
-        versionNumber += 1
-      }
-      if (options.changeDuringEveryRead) {
-        content += 'x'
-        versionNumber += 1
-      }
-      return result
-    },
-    async writeText(_target, nextContent, expected, signal, policy) {
+        const result = content
+        if (changeDuringFirstRead) {
+          changeDuringFirstRead = false
+          content = options.changedContent ?? 'changed\n'
+          versionNumber += 1
+        }
+        if (options.changeDuringEveryRead) {
+          content += 'x'
+          versionNumber += 1
+        }
+        // 模拟真实 DSH fs-local readText：默认 TextDecoder 剥掉 UTF-8 BOM。
+        // 旧断言依赖"readText 原样返回"的 mock，掩盖了插件无法从 readText 结果
+        // 检测 BOM 的集成缺陷；mock 保真后此类问题才能在单测里暴露。
+        return result.startsWith('\uFEFF') ? result.slice(1) : result
+      },
+      async readBytes(_target, _signal, maxBytes) {
+        if (changeDuringFirstRead) {
+          changeDuringFirstRead = false
+          content = options.changedContent ?? 'changed\n'
+          versionNumber += 1
+        }
+        if (options.changeDuringEveryRead) {
+          content += 'x'
+          versionNumber += 1
+        }
+        const raw = Buffer.from(content, 'utf8')
+        if (raw.length > maxBytes) {
+          const error = new Error(`cannot read "${target.displayPath}": ${raw.length} bytes exceeds the ${maxBytes}-byte limit`)
+          error.code = 'FS_TOO_LARGE'
+          throw error
+        }
+        return raw
+    },    async writeText(_target, nextContent, expected, signal, policy) {
       if (options.staleBeforeWrite) {
         options.staleBeforeWrite = false
         versionNumber += 1
@@ -383,7 +403,7 @@ test('zhPrompt=true 时提示词与工具说明中文化，工具名保持英文
   // 参数 description 中文化。
   assert.equal(harness.tools.get('hashline_read').parameters.properties.file_path.description, '要读取的路径，相对于调用会话工作区解析。')
   const editProps = harness.tools.get('hashline_edit').parameters.properties
-  assert.equal(editProps.edits.description, '必填的非空编辑列表。每项是扁平对象：op 取 set_line、replace_lines 或 insert_after，配 anchor（或 start_anchor+end_anchor）与 new_text。')
+  assert.equal(editProps.edits.description, '必填的非空编辑列表。每项是扁平对象：op 取 set_line、replace_lines 或 insert_after，配 anchor（或 start_anchor+end_anchor）与 new_text。op 可缺省：只带 anchor+new_text 时为 set_line，只带 start_anchor+end_anchor+new_text 时为 replace_lines。')
   assert.match(editProps.edits.items.properties.anchor.description, /从 hashline_read 复制的最新 LINE:HASH 锚点/)
   // 提示词 section 中文化，并明确每个数组项只能放一个操作。
   assert.match(harness.sections.get('tool:hashline').text, /用 hashline_read 后再 hashline_edit（edits）/)
@@ -931,6 +951,55 @@ test('CRLF 编辑预览基于磁盘文本，返回锚点可立即继续编辑', 
   assert.equal(harness.content, '\uFEFFa\r\nC\r\n')
 })
 
+test('readBytes 字节路径端到端：BOM 检测与编辑后保真（mock 对齐真实 readText 剥 BOM 语义）', async () => {
+  // 该测试锁定 v0.3.2 的集成缺陷：真实 DSH fs-local readText 用默认 TextDecoder
+  // 解码会剥掉 UTF-8 BOM，导致 read 误报 bom=no、edit 后 BOM 静默丢失。
+  // 修复后插件走 readBytes 字节路径自行保留 BOM 解码。
+  const harness = createHarness({ content: '\uFEFFa\r\nb\r\n' })
+  apply(harness.ctx)
+  const read = await readAnchors(harness)
+
+  assert.equal(read.bom, true)
+  assert.equal(read.eol, 'crlf')
+
+  await harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ op: 'set_line', anchor: read.lines[1].anchor, new_text: 'B' }],
+  }, harness.exec)
+  assert.equal(harness.writeCalls[0].nextContent, '\uFEFFa\r\nB\r\n')
+  assert.equal(harness.content, '\uFEFFa\r\nB\r\n')
+})
+
+test('旧 DSH 无 readBytes 时回退 readText（BOM 保持历史行为但不再丢失已检测的元数据）', async () => {
+  const harness = createHarness({ content: '\uFEFFa\r\nb\r\n' })
+  delete harness.ctx.fs.readBytes
+  apply(harness.ctx)
+  const read = await readAnchors(harness)
+
+  // 回退路径与历史行为一致：readText 剥 BOM 后 splitTextFile 看不到 BOM。
+  assert.equal(read.bom, false)
+  await harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ op: 'set_line', anchor: read.lines[1].anchor, new_text: 'B' }],
+  }, harness.exec)
+  assert.equal(harness.writeCalls[0].nextContent, 'a\r\nB\r\n')
+})
+
+test('readBytes 字节路径拒绝二进制/无效 UTF-8（fatal 解码映射 FS_NOT_TEXT 同义错误）', async () => {
+  // 字节路径自行 fatal 解码；无效 UTF-8 抛 HASHLINE_INVALID_ARGUMENT 同义错误而非崩溃。
+  const harness = createHarness({ content: 'a\nb\n' })
+  apply(harness.ctx)
+  // 直接把 mock 内容换成含无效 UTF-8 字节的 Buffer 形态：通过临时覆写 readBytes 返回值。
+  const fsSvc = harness.ctx.fs
+  const original = fsSvc.readBytes
+  fsSvc.readBytes = async () => new Uint8Array([0x61, 0x0a, 0xff, 0xfe, 0x0a])
+  await assert.rejects(
+    readAnchors(harness),
+    error => error.code === 'HASHLINE_INVALID_ARGUMENT',
+  )
+  fsSvc.readBytes = original
+})
+
 test('锚点过期时不调用 writeText', async () => {
   const harness = createHarness({ content: 'a\nb\n' })
   apply(harness.ctx)
@@ -1112,7 +1181,7 @@ test('编辑参数 schema 保持根级 object，items 为扁平 op 判别形状'
   assert.equal(item.type, 'object')
   assert.equal(item.oneOf, undefined)
   assert.equal(item.additionalProperties, false)
-  assert.deepEqual(item.required, ['op', 'new_text'])
+    assert.deepEqual(item.required, ['new_text'])
   assert.deepEqual(Object.keys(item.properties).sort(), ['anchor', 'end_anchor', 'new_text', 'op', 'start_anchor'])
   assert.deepEqual(item.properties.op.enum, ['set_line', 'replace_lines', 'insert_after'])
 
@@ -1124,7 +1193,7 @@ test('编辑参数 schema 保持根级 object，items 为扁平 op 判别形状'
   assert.deepEqual(strictParameters.required, ['file_path', 'edits'])
   assert.deepEqual(Object.keys(strictParameters.properties).sort(), ['edits', 'file_path'])
   const strictItem = strictParameters.properties.edits.items
-  assert.deepEqual(strictItem.required, ['op', 'new_text'])
+    assert.deepEqual(strictItem.required, ['new_text'])
   assert.deepEqual(strictItem.properties.op.enum, ['set_line', 'replace_lines', 'insert_after'])
 })
 
@@ -1570,6 +1639,41 @@ test('方言回收：完全丢失 edits 信封的根级单操作也被接受', a
   }, harness.exec)
   assert.equal(harness.content, 'a\nB\n')
   assert.ok(result.normalizedFrom.includes('top-level'))
+})
+test('op 缺省方言：忘传 op 的锚点+new_text 项按 set_line 执行（高频失败样本）', async () => {
+  const harness = createHarness({ content: 'a\nb\nc\n' })
+  apply(harness.ctx)
+  const read = await readAnchors(harness)
+  const result = await harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ anchor: read.lines[1].anchor, new_text: 'B' }],
+  }, harness.exec)
+
+  assert.equal(harness.content, 'a\nB\nc\n')
+  assert.equal(result.editsApplied, 1)
+})
+
+test('op 缺省方言：双锚点字段按 replace_lines 执行', async () => {
+  const harness = createHarness({ content: 'a\nb\nc\n' })
+  apply(harness.ctx)
+  const read = await readAnchors(harness)
+  await harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ start_anchor: read.lines[1].anchor, end_anchor: read.lines[2].anchor, new_text: 'X\nY' }],
+  }, harness.exec)
+
+  assert.equal(harness.content, 'a\nX\nY\n')
+})
+
+test('op 缺省方言：混用两族锚点字段拒绝且不写入', async () => {
+  const harness = createHarness({ content: 'a\nb\n' })
+  apply(harness.ctx)
+  const read = await readAnchors(harness)
+  await assert.rejects(harness.tools.get('hashline_edit').execute({
+    file_path: 'sample.txt',
+    edits: [{ anchor: read.lines[0].anchor, start_anchor: read.lines[0].anchor, end_anchor: read.lines[1].anchor, new_text: 'x' }],
+  }, harness.exec), error => error.code === 'HASHLINE_INVALID_ARGUMENT')
+  assert.equal(harness.writeCalls.length, 0)
 })
 
 test('方言回收：多处散落字段值冲突时拒绝且不写入', async () => {
