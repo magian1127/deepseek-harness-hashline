@@ -6,8 +6,8 @@
 
 | 路径 | 职责 |
 | --- | --- |
-| `src/client.ts` | 客户端 TypeScript 源码：向 `settings.plugin.item` 贡献配置卡片 |
-| `src/index.ts` | Host TypeScript 源码：`hashline_read` / `hashline_edit` 工具、设置、提示词、Agent scoped 替换、HMR |
+| `src/client.ts` | 客户端 TypeScript 源码：向 `plugins.bundle.config` 贡献插件页配置表单 |
+| `src/index.ts` | Host TypeScript 源码：`hashline_read` / `hashline_edit` 工具、设置、提示词、Agent scoped 替换 |
 | `src/core.ts` | 锚点/编辑的纯逻辑 TypeScript 核心（拆分、计划、预览） |
 | `src/presentation.ts` | 展示层纯逻辑：读取 envelope、紧凑 diff hunks、回放 meta 窄化（依赖 `diff`） |
 | `src/runtime-entry.ts` | TypeScript 运行时兼容入口 |
@@ -20,9 +20,9 @@
 
 ## 环境要求
 
-- DeepSeek Harness ≥ 0.1.2-rc.1；Web 使用 `web`，Open Design stdio 使用 `open-design`，DSH 一次性任务使用 `headless`
+- DeepSeek Harness ≥ 0.1.5-rc.1；Web 使用 `web`，Open Design stdio 使用 `open-design`，DSH 一次性任务使用 `headless`
 - Node.js `^22.19.0 || >=24.0.0`
-- Web 卡要求 settings keyed Slot；`open-design`/`headless` 只运行 Host 工具和设置门控
+- Web 配置表单要求 DSH ≥ 0.1.6（keyed Slot `plugins.bundle.config`，键为本包 npm 包名）；`open-design`/`headless` 只运行 Host 工具和设置门控
 
 ## 安装方式
 
@@ -50,7 +50,7 @@ dsh plugin --profile headless add "file:<绝对路径>/deepseek-harness-hashline
 
 ### 持续开发（link:）
 
-让 profile 直接加载当前源码并保留 Host 热重载：
+让 profile 直接加载当前源码（Host 改动需重启 `dsh web` 生效）：
 
 ```powershell
 dsh plugin --profile web add "link:<绝对路径>/deepseek-harness-hashline"
@@ -65,7 +65,7 @@ dsh plugin --profile headless add "link:<绝对路径>/deepseek-harness-hashline
 
 新版运行时经 `src/profile-modules.ts` 从当前 profile 解析 DSH peer，`file:` 与 `link:` 安装都不再需要本地 junction 或 `setup:link`。
 
-`file:` 物化快照，`link:` 让下一次进程读取当前构建；两者仍按 profile 隔离。Web 长跑进程依赖 HMR/自然重启，`open-design` 与 `headless` 都是短进程，下一次调用自然加载。
+`file:` 物化快照，`link:` 让下一次进程读取当前构建；两者仍按 profile 隔离。Web 是长跑进程，Host 半边改动需重启一次 `dsh web`（见下节）；`open-design` 与 `headless` 都是短进程，下一次调用自然加载。
 
 ## Peer 解析
 
@@ -92,17 +92,24 @@ npm run build
 
 不要直接修改 `lib/`；源码修改后重新构建，再进行本地安装或测试。
 
-## Host 热重载
+## Host 半边的更新路径（无热重载）
 
-本插件的专属 Host 监视目标是 `lib/index.js`、`lib/core.js`、`lib/presentation.js` 与 `lib/runtime-entry.js`；构建后须观察旧 Fiber 卸载、新 Fiber 激活及工具契约变化。
+**Host 半边没有热通道**：官方 watcher 的默认 `ignored` 含 `**/node_modules`，profile bundle 形态的模块 URL 正落在此处；`hmr` 服务面也已移除 `registerConfig`/`partialReload`。因此改 `lib/`（`index.js` / `core.js` / `presentation.js` / `runtime-entry.js`）后**由用户重启一次 `dsh web`** 才会生效，不存在可观测的「旧 Fiber 卸载 → 新 Fiber 激活」自动过程。
 
-`lib/client.js` 由 `src/client.ts` 生成。Web 安装通过 `node bin/dsh-hashline.mjs install --profile web --link <目录>`（只走持久 bundle，不部署热行；安装后需重启一次 `dsh web`）；headless 使用 `dsh plugin --profile headless add "link:<目录>"`，下一次无头调用加载 Host 半边，不使用 HMR，也不依赖 3080 Web 探测。
+`lib/client.js` 由 `src/client.ts` 生成。Web 安装通过 `node bin/dsh-hashline.mjs install --profile web --link <目录>`（只走持久 bundle，不部署热行）；headless 使用 `dsh plugin --profile headless add "link:<目录>"`，下一次无头调用加载 Host 半边，不使用 HMR，也不依赖 3080 Web 探测。
 
 ## 运行环境验证与热更新经验
 
 以下结论以**当前进程的实际能力**为准，不把旧 rev 或 checkout 源码当成运行事实。
 
-- 官方 HMR 在 profile bundle 形态（`file:` 或 `link:`，模块 URL 含 `node_modules`）中可能被默认 ignore 排除；此时必须让本插件以 `hmr.registerConfig`（`ignored: undefined`）精确自监视真实构建产物，不能误判为官方 root 已覆盖。
+- **Host 半边没有热通道**：官方 HMR 在 profile bundle 形态（`file:` 或 `link:`，模块 URL 含
+  `node_modules`）下被其默认 `ignored`（`**/node_modules`）排除；0.1.6-alpha.2 的 `hmr` 服务面
+  又只剩 `baseDir`/`runExclusive`/`watchConfig`/`getOuterStack`/`getLinked`，`registerConfig` /
+  `partialReload` 已移除，旧的自注册自监视写法恒为 no-op。结论：改 `lib/` 后**由用户重启一次
+  `dsh web`** 才会生效。
+- **Client 半边自动换血，无需刷新页面**：`@deepseek-ai/dsh-client-hmr`（0.1.6+）每 500 ms stat
+  轮询 client bundle，变化即 `clientModules.rebuilt`，经 `/plugins/events` SSE 推 `rebuilt` 帧，
+  浏览器执行 `entries.reload(id, rev)` 在页面内替换。
 - 端到端复验至少覆盖三类历史失败：①过期锚点唯一重定位；②坏锚点回显附近真实锚点；③`old_string` / `edits[].replace` 输入被清晰拒绝（0.2.0 移除后的回归防御）。测试文件放隔离位置，验收样例若保留在仓库，需明确其用途后再提交。
 - 验证提示词注入：系统提示词不持久化进会话日志正文，但会随每个请求写入 `request/header` 的 `system` 字段。完整读取会话导出文件（`.jsonl` 或 `.jsonl.zstd`）后检索 `request/header`，即可看到当次真实组装结果；这是确认“提示词是否重复/缺失”的最直接证据，不要只靠 build/test 通过。
 

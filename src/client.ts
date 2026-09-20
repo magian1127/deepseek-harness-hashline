@@ -5,6 +5,8 @@ const h = React.createElement
 
 const SETTINGS_NAMESPACE = 'hashline'
 const LOCALE_NAMESPACE = 'settings.hashline'
+/** plugins.bundle.config 槽位的键:profile 中本包的 npm 包名(非 settings 命名空间)。 */
+const BUNDLE_PACKAGE_NAME = 'deepseek-harness-hashline'
 
 const FIELDS = [
   'enabled',
@@ -38,11 +40,7 @@ const NUMBER_FIELDS = [
 ]
 
 const zh = {
-  title: '哈希锚点编辑',
-  description: '基于哈希锚点的读取与原子文件编辑',
-  enabledStatus: '已启用',
-  disabledStatus: '已停用',
-  pending: '未保存',
+  summary: '基于哈希锚点的读取与原子文件编辑:工具替换、提示词与数值参数。',
   loading: '正在读取设置…',
   unavailable: '当前部署未提供哈希锚点设置。',
   readOnly: '当前设置文档为只读，无法保存更改。',
@@ -66,8 +64,6 @@ const zh = {
   contextLinesDesc: '结果在变更位置前后返回的行数 (0–20)。',
   inherited: '继承默认值',
   overridden: '用户覆盖',
-  restore: '恢复默认值',
-  discard: '放弃修改',
   save: '保存',
   saving: '保存中…',
   invalid: '请修正超出范围或非整数的数值。',
@@ -82,11 +78,7 @@ const zh = {
 }
 
 const en = {
-  title: 'Hashline editing',
-  description: 'Hash-anchored reading and atomic file editing',
-  enabledStatus: 'Enabled',
-  disabledStatus: 'Disabled',
-  pending: 'Unsaved',
+  summary: 'Hash-anchored reading and atomic file editing: tool replacement, prompts, and numeric parameters.',
   loading: 'Loading settings...',
   unavailable: 'Hashline settings are not available in this deployment.',
   readOnly: 'Settings are read-only; changes cannot be saved.',
@@ -110,8 +102,6 @@ const en = {
   contextLinesDesc: 'Number of lines returned before and after a change (0-20).',
   inherited: 'Inherited',
   overridden: 'Overridden',
-  restore: 'Restore default',
-  discard: 'Discard changes',
   save: 'Save',
   saving: 'Saving...',
   invalid: 'Fix out-of-range or non-integer values.',
@@ -125,61 +115,10 @@ const en = {
   'read.expandRest': '… {count} more lines',
 }
 
-const responsiveCss = [
-  '@container (max-width: 180px) {',
-  '  [data-hashline-header] { min-height: 0 !important; padding: 10px 8px !important; display: grid !important; grid-template-columns: minmax(0, 1fr) 12px !important; gap: 4px !important; }',
-  '  [data-hashline-head-text] { min-width: 0 !important; }',
-  '  [data-hashline-name] { font-size: 12px !important; word-break: keep-all; overflow-wrap: anywhere; }',
-  '  [data-hashline-description], [data-hashline-badge], [data-hashline-hint], [data-hashline-override] { display: none !important; }',
-  '  [data-hashline-body] { margin: 0 6px !important; }',
-  '  [data-hashline-row] { min-height: 0 !important; padding: 8px 0 !important; flex-direction: column !important; align-items: flex-start !important; gap: 6px !important; }',
-  '  [data-hashline-label-line] { display: block !important; word-break: keep-all; overflow-wrap: anywhere; }',
-  '  [data-hashline-number-grid] { grid-template-columns: minmax(0, 1fr) !important; gap: 10px !important; padding: 10px 0 !important; }',
-  '  [data-hashline-footer] { display: grid !important; grid-template-columns: minmax(0, 1fr) !important; }',
-  '  [data-hashline-footer] button { width: 100% !important; padding: 5px 3px !important; overflow-wrap: anywhere; }',
-  '}',
-].join('\n')
+// 页面表单容器:对齐官方 PluginConfigForm.module.css 的 .form(flex column)。
+const formStyle = { display: 'flex', flexDirection: 'column' } as const
 
 const uiStyles = {
-  card: {
-    listStyle: 'none',
-    border: '1px solid var(--dsw-alias-border-l2)',
-    borderRadius: 12,
-    background: 'var(--dsw-alias-bg-layer-3)',
-    color: 'var(--dsw-alias-label-primary)',
-    overflow: 'hidden',
-    containerType: 'inline-size',
-  },
-  header: {
-    width: '100%',
-    minHeight: 72,
-    appearance: 'none',
-    border: 0,
-    background: 'transparent',
-    color: 'inherit',
-    font: 'inherit',
-    textAlign: 'left',
-    cursor: 'pointer',
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12,
-    padding: '14px 16px',
-  },
-  headText: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 },
-  name: { fontSize: 15, fontWeight: 600, lineHeight: 1.4 },
-  description: { fontSize: 13, lineHeight: 1.5, color: 'var(--dsw-alias-label-tertiary)' },
-  badge: {
-    flex: 'none',
-    borderRadius: 999,
-    padding: '1px 8px',
-    fontSize: 11,
-    lineHeight: '17px',
-    whiteSpace: 'nowrap',
-    background: 'var(--dsw-alias-bg-module-platform)',
-    color: 'var(--dsw-alias-label-secondary)',
-  },
-  chevron: { flex: 'none', width: 16, textAlign: 'center', color: 'var(--dsw-alias-label-tertiary)' },
-  body: { borderTop: '1px solid var(--dsw-alias-border-l2)', margin: '0 16px', padding: '2px 0 8px' },
   status: { margin: '12px 0', fontSize: 13, lineHeight: 1.5, color: 'var(--dsw-alias-label-tertiary)' },
   row: {
     display: 'flex',
@@ -221,22 +160,9 @@ const uiStyles = {
     justifyContent: 'flex-end',
     flexWrap: 'wrap',
     gap: 8,
-    padding: '12px 0 4px',
-    borderTop: '1px solid var(--dsw-alias-border-l2)',
+    paddingTop: 16,
   },
   error: { flex: '1 1 220px', margin: 0, fontSize: 12, lineHeight: 1.5, color: 'var(--dsw-alias-label-error)' },
-  secondaryButton: {
-    appearance: 'none',
-    border: '1px solid var(--dsw-alias-border-l2)',
-    borderRadius: 8,
-    padding: '5px 12px',
-    background: 'transparent',
-    color: 'var(--dsw-alias-label-secondary)',
-    font: 'inherit',
-    fontSize: 13,
-    lineHeight: 1.5,
-    cursor: 'pointer',
-  },
   toolRow: { width: '100%', minWidth: 0 },
   toolSep: { flex: 'none', width: 2, height: 2, margin: '0 8px', borderRadius: 1, background: 'var(--dsw-alias-label-caption)' },
     toolLink: {
@@ -379,7 +305,7 @@ function controlDisabledStyle(disabled: boolean): { opacity: number; cursor: str
   return disabled ? { opacity: 0.45, cursor: 'default' } : null
 }
 
-function createCard(scope: any, t: (key: string) => string): () => any {
+function createForm(scope: any, t: (key: string) => string): (props: { view?: string }) => any {
   function FieldIdentity(props: { overridden: boolean }) {
     return h('span', { style: uiStyles.override, 'data-hashline-override': '' }, props.overridden ? t('overridden') : t('inherited'))
   }
@@ -425,30 +351,27 @@ function createCard(scope: any, t: (key: string) => string): () => any {
       }))
   }
 
-  return function HashlineSettingsCard() {
+  return function HashlineConfigPage(props: { view?: string }) {
+    // summary 视图:插件页标题下的一句话简介;组合包页面目前只用 page 视图,
+    // summary 分支作为契约兜底(契约声明两种视图都会传)。
+    if (props?.view === 'summary') return h('span', { 'data-hashline-summary': '' }, t('summary'))
     const snapshot = React.useSyncExternalStore(
       function (listener: () => void) { return scope.subscribe(listener) },
       function () { return scope.getSnapshot() },
     )
     const value = normalized(snapshot.value)
     const [draft, setDraft] = React.useState(function () { return value })
-    const [open, setOpen] = React.useState(false)
     const [saving, setSaving] = React.useState(false)
     const [error, setError] = React.useState('')
-    const [resetAll, setResetAll] = React.useState(false)
-    const dirty = !sameSettings(draft, value) || resetAll
+    const dirty = !sameSettings(draft, value)
     const valid = validDraft(draft)
     const editable = snapshot.status === 'ready' && snapshot.writable && !saving
 
     React.useEffect(function () {
-      if (!dirty && !saving && snapshot.status === 'ready') {
-        setDraft(normalized(snapshot.value))
-        setResetAll(false)
-      }
+      if (!dirty && !saving && snapshot.status === 'ready') setDraft(normalized(snapshot.value))
     }, [snapshot.revision, snapshot.status, dirty, saving])
 
     function change(field: string, nextValue: any) {
-      setResetAll(false)
       setError('')
       setDraft(function (previous: SettingsValue) {
         return Object.assign({}, previous, { [field]: nextValue })
@@ -460,20 +383,12 @@ function createCard(scope: any, t: (key: string) => string): () => any {
       setSaving(true)
       setError('')
       try {
-        if (resetAll) {
-          for (let resetIndex = 0; resetIndex < FIELDS.length; resetIndex += 1) {
-            await scope.unset(FIELDS[resetIndex])
-          }
-        } else {
-          for (let index = 0; index < FIELDS.length; index += 1) {
-            const field = FIELDS[index]
-            if (!Object.is(draft[field as keyof SettingsValue], value[field as keyof SettingsValue])) await scope.set(field, draft[field as keyof SettingsValue])
-          }
+        for (let index = 0; index < FIELDS.length; index += 1) {
+          const field = FIELDS[index]
+          if (!Object.is(draft[field as keyof SettingsValue], value[field as keyof SettingsValue])) await scope.set(field, draft[field as keyof SettingsValue])
         }
         const accepted = normalized(scope.getSnapshot().value)
-        const expected = resetAll ? normalized(scope.getSnapshot().base) : draft
-        if (!sameSettings(accepted, expected)) throw new Error(t('saveNotApplied'))
-        setResetAll(false)
+        if (!sameSettings(accepted, draft)) throw new Error(t('saveNotApplied'))
       } catch (saveError) {
         setError(saveError instanceof Error ? saveError.message : String(saveError))
       } finally {
@@ -481,27 +396,13 @@ function createCard(scope: any, t: (key: string) => string): () => any {
       }
     }
 
-    function discard() {
-      setDraft(value)
-      setResetAll(false)
-      setError('')
-    }
-
-    function restore() {
-      setDraft(normalized(snapshot.base))
-      setResetAll(true)
-      setError('')
-    }
-
-    const statusText = value.enabled ? t('enabledStatus') : t('disabledStatus')
-    const headerBadge = dirty ? t('pending') : statusText
-    let body
-    if (snapshot.status === 'loading') {
-      body = h('p', { style: uiStyles.status }, t('loading'))
-    } else if (snapshot.status !== 'ready') {
-      body = h('p', { style: uiStyles.status }, t('unavailable'))
-    } else {
-      body = h(React.Fragment, null,
+    // 离开页面即卸载,草稿随组件状态丢弃(官方约定:只有保存才写入)。
+    return h('div', { style: formStyle, 'data-hashline-config': '' },
+      snapshot.status === 'loading'
+        ? h('p', { style: uiStyles.status }, t('loading'))
+        : snapshot.status !== 'ready'
+          ? h('p', { style: uiStyles.status }, t('unavailable'))
+          : h(React.Fragment, null,
         snapshot.writable ? null : h('p', { style: uiStyles.status }, t('readOnly')),
         h(ToggleRow, {
           field: 'enabled', value: draft.enabled, disabled: !editable,
@@ -542,39 +443,10 @@ function createCard(scope: any, t: (key: string) => string): () => any {
           h('p', { style: uiStyles.error }, !valid ? t('invalid') : error === '' ? '' : t('saveFailed') + error),
           h('button', {
             type: 'button',
-            disabled: !editable,
-            style: Object.assign({}, uiStyles.secondaryButton, controlDisabledStyle(!editable)),
-            onClick: restore,
-          }, t('restore')),
-          h('button', {
-            type: 'button',
-            disabled: !editable || !dirty,
-            style: Object.assign({}, uiStyles.secondaryButton, controlDisabledStyle(!editable || !dirty)),
-            onClick: discard,
-          }, t('discard')),
-          h('button', {
-            type: 'button',
             disabled: !editable || !dirty || !valid,
             style: Object.assign({}, uiStyles.primaryButton, controlDisabledStyle(!editable || !dirty || !valid)),
             onClick: function () { void save() },
-          }, saving ? t('saving') : t('save'))))
-    }
-
-    return h('li', { style: uiStyles.card, 'data-hashline-settings': '' },
-      h('style', null, responsiveCss),
-      h('button', {
-        type: 'button',
-        'aria-expanded': open,
-        style: uiStyles.header,
-        'data-hashline-header': '',
-        onClick: function () { setOpen(!open) },
-      },
-        h('span', { style: uiStyles.headText, 'data-hashline-head-text': '' },
-          h('span', { style: uiStyles.name, 'data-hashline-name': '' }, t('title')),
-          h('span', { style: uiStyles.description, 'data-hashline-description': '' }, t('description'))),
-        h('span', { style: uiStyles.badge, 'data-hashline-badge': '' }, headerBadge),
-        h('span', { style: uiStyles.chevron, 'data-hashline-chevron': '', 'aria-hidden': 'true' }, open ? '▾' : '▸')),
-      open ? h('div', { style: uiStyles.body, 'data-hashline-body': '' }, body) : null)
+          }, saving ? t('saving') : t('save')))))
   }
 }
 
@@ -1000,16 +872,18 @@ function filePathFromBlock(block: any): string | undefined {
 function apply(ctx: any): void {
   const t = ctx.locale.bind(LOCALE_NAMESPACE)
   const scope = ctx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE })
-  const Card = createCard(scope, t)
+  const ConfigPage = createForm(scope, t)
   ctx.effect(function () {
     return ctx.locale.register(LOCALE_NAMESPACE, { zh, en })
   }, 'dsh-hashline: settings dictionaries')
-  ctx.slots.inject('settings.plugin.item', function () {
+  // 插件页组合包页面:键必须是 profile 里本包的 npm 包名(见
+  // plugins.bundle.config 槽位契约),settings 命名空间与写入协议不变。
+  ctx.slots.inject('plugins.bundle.config', function () {
     return ctx.slots.register({
-      name: 'settings.plugin.item',
-      key: SETTINGS_NAMESPACE,
+      name: 'plugins.bundle.config',
+      key: BUNDLE_PACKAGE_NAME,
       locale: LOCALE_NAMESPACE,
-    }, Card)
+    }, ConfigPage)
   })
   const HashlineReadRow = createHashlineReadRow(t)
   const HashlineEditRow = createHashlineEditRow()

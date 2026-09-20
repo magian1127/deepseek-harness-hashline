@@ -49,7 +49,7 @@ Open Design（`open-design` profile）与 DSH 一次性 `headless` 默认仍使�
 
 - DeepSeek Harness ≥ 0.1.5-rc.1；Web GUI 使用 `web` profile，Open Design stdio 使用 `open-design` profile，DSH 一次性任务使用 `headless` profile
 - Node.js `^22.19.0 || >=24.0.0`
-- 网页配置卡片还要求 DSH 包含 `settings.register(..., { exposeToClients: true })`；`open-design`/`headless` 只运行 Host 半边
+- 网页配置表单还要求 DSH ≥ 0.1.6（`plugins.bundle.config` 槽位）；`open-design`/`headless` 只运行 Host 半边
 
 ## 安装
 
@@ -82,8 +82,12 @@ dsh plugin --profile headless list
 
 ## 更新
 
-重新执行安装命令即可更新依赖与持久 bundle。浏览器端内容更新后刷新页面；使用本地 `link:` 开发时，
-主机文件在 DSH HMR 服务可用时自动热重载；不可用时检查本插件的精确自监视路径并报告，不能以重启代替。
+重新执行安装命令即可更新依赖与持久 bundle。`lib/client.js` 的改动由 DSH client HMR 自动换血
+（每 500ms stat 轮询 + `/plugins/events` SSE 的 `rebuilt` 帧触发页面内替换），无需刷新页面。
+
+Host 半边没有热通道：`hmr` 服务面已无 `registerConfig`/`partialReload`，且 profile bundle 位于
+官方 watcher 默认排除的 `node_modules` 下，新构建不会进入长跑进程——改 Host 源码后需重启一次
+`dsh web`。
 
 ## 卸载
 
@@ -99,11 +103,11 @@ dsh plugin --profile headless remove deepseek-harness-hashline
 
 | 数据 | 存储位置 |
 | --- | --- |
-| 启用、替换内置读写、无头模式替换门控、工具选择提示、提示词语言及四个哈希/读取参数 | DSH `settings` 命名空间 `hashline`（在“设置 → 插件 → 插件配置”中编辑） |
+| 启用、替换内置读写、无头模式替换门控、工具选择提示、提示词语言及四个哈希/读取参数 | DSH `settings` 命名空间 `hashline`（在侧栏「插件」页 → 本包页面编辑，DSH 0.1.6+） |
 
-插件不注册模型工具以外的额外能力、不上传数据、不维护独立数据文件。客户端只向现有
-`settings.plugin.item` Slot 贡献配置卡片，通过 DSH `settingsScope` 读写同一 Host 命名空间。
-设置卡的准确顺序、默认值和范围只在[使用指南的“配置”章节](docs/usage.md#配置)维护。
+插件不注册模型工具以外的额外能力、不上传数据、不维护独立数据文件。客户端只向
+`plugins.bundle.config` Slot 贡献插件页配置表单（键为本包 npm 包名），通过 DSH `settingsScope`
+读写同一 Host 命名空间。表单的准确顺序、默认值和范围只在[使用指南的“配置”章节](docs/usage.md#配置)维护。
 
 ## 常见问题
 

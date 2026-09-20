@@ -37,7 +37,7 @@
 
 - DeepSeek Harness ≥ 0.1.5-rc.1; the Web GUI uses `web`, Open Design stdio uses `open-design`, and DSH one-shot tasks use `headless`
 - Node.js `^22.19.0 || >=24.0.0`
-- The Web card also requires `settings.register(..., { exposeToClients: true })`; `open-design`/`headless` run the Host half only
+- The Web configuration form also requires DSH ≥ 0.1.6 (the `plugins.bundle.config` slot); `open-design`/`headless` run the Host half only
 
 ## Installation
 
@@ -70,10 +70,14 @@ dsh plugin --profile headless list
 
 ## Updates
 
-Re-run the installation command to update the dependency and persistent bundle. Refresh the page
-after browser-side changes. During local `link:` development, Host files hot reload when the DSH HMR service is
-available; if unavailable, inspect this plugin's exact self-watch paths and report the failure instead of restarting
-DSH.
+Re-run the installation command to update the dependency and persistent bundle. Changes to
+`lib/client.js` hot-swap automatically through DSH client HMR (a 500 ms stat poll plus the
+`/plugins/events` SSE `rebuilt` frame driving an in-page replacement), so no page refresh is needed.
+
+The Host half has no hot path: the `hmr` service surface no longer exposes `registerConfig` /
+`partialReload`, and a profile bundle lives under `node_modules`, which the official watcher's
+default `ignored` list excludes — a new build never reaches the long-running process, so a Host-side
+change requires one `dsh web` restart.
 
 ## Uninstallation
 
@@ -89,10 +93,10 @@ Uninstallation is profile-scoped and removes the persistent bundle and running e
 
 | Data | Storage |
 | --- | --- |
-| Enablement, built-in read/edit replacement, the headless replacement gate, tool-selection guidance, prompt language, and four hash/read parameters | The DSH `hashline` settings namespace, edited under Settings > Plugins > Plugin configuration |
+| Enablement, built-in read/edit replacement, the headless replacement gate, tool-selection guidance, prompt language, and four hash/read parameters | The DSH `hashline` settings namespace, edited on the sidebar Plugins page under this package (DSH 0.1.6+) |
 
-The plugin does not register capabilities beyond its model tools, upload data, or maintain independent data files. The client only contributes a configuration card to the existing `settings.plugin.item` slot and uses DSH `settingsScope` to read and write the same Host namespace.
-The exact card order, defaults, and ranges are maintained only in the [Usage guide configuration section](docs/usage.md#配置).
+The plugin does not register capabilities beyond its model tools, upload data, or maintain independent data files. The client only contributes a configuration form to the `plugins.bundle.config` slot (keyed by this package's npm name) and uses DSH `settingsScope` to read and write the same Host namespace.
+The exact form order, defaults, and ranges are maintained only in the [Usage guide configuration section](docs/usage.md#配置).
 
 ## FAQ
 

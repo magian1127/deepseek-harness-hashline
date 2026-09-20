@@ -35,9 +35,9 @@ function createReactHarness() {
 
   return {
     React,
-    render(Component) {
+    render(Component, props) {
       cursor = 0
-      return Component()
+      return Component(props)
     },
   }
 }
@@ -100,7 +100,7 @@ async function loadClientModule(React, primitives = {}) {
     }
 }
 
-test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', async () => {
+test('客户端 bundle 绑定 Hashline settings 并注册插件页配置表单', async () => {
   const reactHarness = createReactHarness()
   const { definition, exports } = await loadClientModule(reactHarness.React)
   const localeRegistrations = []
@@ -173,7 +173,7 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
     },
     slots: {
       inject(name, factory) {
-        assert.ok(name === 'settings.plugin.item' || name === 'tool.call.toolview')
+        assert.ok(name === 'plugins.bundle.config' || name === 'tool.call.toolview')
         const effect = factory()
         if (effect !== null && typeof effect === 'object' && Symbol.iterator in effect) {
           const disposers = [...effect]
@@ -201,17 +201,17 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
   const zhDictionary = localeRegistrations[0].dictionaries.zh
   const enDictionary = localeRegistrations[0].dictionaries.en
   assert.deepEqual(Object.keys(zhDictionary).sort(), Object.keys(enDictionary).sort())
-  assert.equal(zhDictionary.title, '哈希锚点编辑')
+  assert.equal(zhDictionary.summary, '基于哈希锚点的读取与原子文件编辑:工具替换、提示词与数值参数。')
   assert.equal(zhDictionary.replaceBuiltinEdit, '替换内置读写')
   assert.equal(zhDictionary.replaceBuiltinEditInHeadless, '无头模式替换内置读写')
-  assert.equal(enDictionary.title, 'Hashline editing')
+  assert.equal(enDictionary.summary, 'Hash-anchored reading and atomic file editing: tool replacement, prompts, and numeric parameters.')
   assert.equal(enDictionary.replaceBuiltinEdit, 'Replace built-in read/edit')
   assert.equal(enDictionary.replaceBuiltinEditInHeadless, 'Replace built-in read/edit in headless mode')
   assert.equal(enDictionary.save, 'Save')
   assert.equal(slotRegistrations.length, 3)
   assert.deepEqual(slotRegistrations[0].options, {
-    name: 'settings.plugin.item',
-    key: 'hashline',
+    name: 'plugins.bundle.config',
+    key: 'deepseek-harness-hashline',
     locale: 'settings.hashline',
   })
 
@@ -219,17 +219,15 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
     { name: 'tool.call.toolview', key: 'hashline_read', locale: 'settings.hashline' },
     { name: 'tool.call.toolview', key: 'hashline_edit', locale: 'settings.hashline' },
   ])
-  const Card = slotRegistrations[0].Component
-  let tree = reactHarness.render(Card)
-  assert.equal(tree.type, 'li')
-  assert.equal(tree.props['data-hashline-settings'], '')
-  let nodes = flatten(tree)
-  const header = nodes.find(node => node?.type === 'button' && node.props['aria-expanded'] === false)
-  assert.ok(header)
-  header.props.onClick()
+  const ConfigPage = slotRegistrations[0].Component
+  const summaryTree = reactHarness.render(ConfigPage, { view: 'summary' })
+  assert.equal(summaryTree.type, 'span')
+  assert.ok(flatten(summaryTree).includes('summary'))
+  let tree = reactHarness.render(ConfigPage)
+  assert.equal(tree.type, 'div')
+  assert.equal(tree.props['data-hashline-config'], '')
 
-  tree = reactHarness.render(Card)
-  nodes = flatten(tree)
+  let nodes = flatten(tree)
   const toggles = nodes.filter(node => node?.type === 'input' && node.props.type === 'checkbox')
   assert.equal(toggles.length, 5)
   assert.deepEqual(toggles.map(node => node.props['aria-label']), [
@@ -246,7 +244,7 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
   const replaceInHeadless = nodes.find(node => node?.type === 'input' && node.props['aria-label'] === 'replaceBuiltinEditInHeadless')
   assert.equal(replaceInHeadless.props.checked, false)
   replaceInHeadless.props.onChange({ target: { checked: true } })
-  tree = reactHarness.render(Card)
+  tree = reactHarness.render(ConfigPage)
   nodes = flatten(tree)
   const save = nodes.find(node => node?.type === 'button' && node.props.children === 'save')
   assert.ok(save)
@@ -258,16 +256,16 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件配置卡片', as
   assert.deepEqual(unsetCalls, [])
 
   acceptWrites = false
-  tree = reactHarness.render(Card)
+  tree = reactHarness.render(ConfigPage)
   nodes = flatten(tree)
   const rejectedEnabled = nodes.find(node => node?.type === 'input' && node.props['aria-label'] === 'enabled')
   rejectedEnabled.props.onChange({ target: { checked: true } })
-  tree = reactHarness.render(Card)
+  tree = reactHarness.render(ConfigPage)
   nodes = flatten(tree)
   const rejectedSave = nodes.find(node => node?.type === 'button' && node.props.children === 'save')
   rejectedSave.props.onClick()
   await new Promise(resolve => setImmediate(resolve))
-  tree = reactHarness.render(Card)
+  tree = reactHarness.render(ConfigPage)
   nodes = flatten(tree)
   assert.ok(nodes.some(node => typeof node === 'string' && node.includes('saveNotApplied')))
 })

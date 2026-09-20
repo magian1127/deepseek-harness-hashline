@@ -11,7 +11,7 @@
 5. 写入必须经过 `fs/write-intent` 并带 `replaceIfVersion` 版本保护。
 6. 相对路径与 sandbox policy 必须使用调用会话，不得退回插件进程 cwd。
 7. 共享的 Fiber、副作用、scope、schema、Client/Host HMR、Git 与用户改动保护规则见 [`../docs/`](../docs/README.md)。
-8. 客户端只向 `settings.plugin.item` 贡献配置卡片并使用官方 `settingsScope`；不得添加自定义网络请求、遥测或独立持久数据。
+8. 客户端只向 `plugins.bundle.config`（键为本包 npm 包名，DSH 0.1.6+）贡献插件页配置表单并使用官方 `settingsScope`；不得添加自定义网络请求、遥测或独立持久数据。
 9. 不复制热安装监督器、不部署热行。Web 可用本项目 CLI；Open Design 用 `dsh plugin --profile open-design add <包>`，stock headless 用 `--profile headless`，下一次短进程自然加载。不要用 3080 Web 探测判断非 Web profile。
 
 ## 修改与验证

@@ -146,11 +146,11 @@ BOM 检测走字节路径：插件优先用 `fs.readBytes` 读取原始字节并
 
 bundle 默认值来自插件源码的配置 schema（`src/index.ts` 的 `createConfigSchema` defaults）；安装包内的 `cordis.patch.yml` 仅声明插件 `id`/`name`，不含配置值：
 
-下表严格按照“设置 → 插件 → 插件配置 → 哈希锚点编辑”卡片从上到下排列：
+下表严格按照侧栏「插件」页 → deepseek-harness-hashline 页面（DSH 0.1.6+）配置表单从上到下排列；只有「保存」才写入，离开页面即丢弃草稿：
 
 | 字段 | 默认值 | 说明 |
 | --- | ---: | --- |
-| `enabled` | true | 全局启停两个 Hashline 工具及提示词；设置卡片保持可用 |
+| `enabled` | true | 全局启停两个 Hashline 工具及提示词；配置表单保持可用 |
 | `replaceBuiltinEdit` | false | 在允许编辑的智能体作用域替换内置 `read` / `edit`；替换后的 `edit` 强制使用最新 `LINE:HASH`，不公开文本替换或 `replace`。**极简模式（minimal 预设）下不替换**：仅在 Agent 作用域隐藏全局 `hashline_read` / `hashline_edit` |
 | `replaceBuiltinEditInHeadless` | false | 门控 Open Design 的 `open-design` stdio 与 DSH `headless` 中的同名替换；需与 `replaceBuiltinEdit` 同时开启。关闭时保留原版 `read` / `edit` 与显式 `hashline_read` / `hashline_edit` |
 | `promptGuidance` | true | 是否注册简短工具选用提示；替换内置读写开启时，提示以同名 section 阴影在 Agent 作用域替换内置 `read` / `edit` 原提示 |
