@@ -165,9 +165,9 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件页配置表单',
         return () => {}
       },
     },
-    settingsScope: {
-      bind(spec) {
-        boundNamespaces.push(spec.namespace)
+    configForms: {
+      get(entryId) {
+        boundNamespaces.push(entryId)
         return scope
       },
     },
@@ -192,9 +192,9 @@ test('客户端 bundle 绑定 Hashline settings 并注册插件页配置表单',
   }
 
   assert.equal(definition.id, 'deepseek-harness-hashline')
-  assert.deepEqual(exports.inject, ['slots', 'locale', 'connection', 'remote', 'settingsScope'])
+  assert.deepEqual(exports.inject, ['slots', 'locale', 'connection', 'configForms'])
   exports.apply(ctx)
-  assert.deepEqual(boundNamespaces, ['hashline'])
+  assert.deepEqual(boundNamespaces, ['tool-hashline'])
   assert.equal(localeRegistrations[0].namespace, 'settings.hashline')
   assert.ok(localeRegistrations[0].dictionaries.zh)
   assert.ok(localeRegistrations[0].dictionaries.en)
@@ -287,7 +287,7 @@ test('替换内置 toolview 使用低优先级阴影并可逆清理', async () =
   }
   const ctx = {
     locale: { bind: () => key => key, register: () => () => {} },
-    settingsScope: { bind: () => scope },
+    configForms: { get: () => scope },
     slots: {
       inject: (_name, factory) => {
         const effect = factory()
@@ -325,8 +325,8 @@ test('Hashline 读取 toolview 复用原生 ReadBlock 并把完整 LINE|HASH 传
   const registrations = []
   const ctx = {
     locale: { bind: () => key => key, register: () => () => {} },
-    settingsScope: {
-      bind: () => ({
+    configForms: {
+      get: () => ({
         getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, revision: 0, writable: false, mode: 'host' }),
         subscribe: () => () => {}, set: async () => {}, unset: async () => {},
       }),
@@ -412,7 +412,7 @@ test('Hashline 编辑 toolview 把 -|旧HASH / +|新HASH 作为灰色不可选 g
   const registrations = []
   const ctx = {
     locale: { bind: () => key => key, register: () => () => {} },
-    settingsScope: { bind: () => ({
+    configForms: { get: () => ({
       getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, revision: 0, writable: false, mode: 'host' }),
       subscribe: () => () => {}, set: async () => {}, unset: async () => {},
     }) },
@@ -471,7 +471,7 @@ test('Hashline 读取 toolview 对畸形行号回放安全回退', async () => {
   const registrations = []
   const ctx = {
     locale: { bind: () => key => key, register: () => () => {} },
-    settingsScope: { bind: () => ({
+    configForms: { get: () => ({
       getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, revision: 0, writable: false, mode: 'host' }),
       subscribe: () => () => {}, set: async () => {}, unset: async () => {},
     }) },
@@ -511,7 +511,7 @@ test('Hashline 编辑 toolview 对失败结果可展开并展示错误文本', a
   const registrations = []
   const ctx = {
     locale: { bind: () => key => key, register: () => () => {} },
-    settingsScope: { bind: () => ({
+    configForms: { get: () => ({
       getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, revision: 0, writable: false, mode: 'host' }),
       subscribe: () => () => {}, set: async () => {}, unset: async () => {},
     }) },
@@ -564,7 +564,7 @@ test('PTC 子调用的读取行（无 meta）可展开并以 OUT 文本回退', 
   const registrations = []
   const ctx = {
     locale: { bind: () => key => key, register: () => () => {} },
-    settingsScope: { bind: () => ({
+    configForms: { get: () => ({
       getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, revision: 0, writable: false, mode: 'host' }),
       subscribe: () => () => {}, set: async () => {}, unset: async () => {},
     }) },
@@ -612,7 +612,7 @@ test('PTC 子调用的编辑行（无 meta）可展开并以 OUT 文本回退', 
   const registrations = []
   const ctx = {
     locale: { bind: () => key => key, register: () => () => {} },
-    settingsScope: { bind: () => ({
+    configForms: { get: () => ({
       getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, revision: 0, writable: false, mode: 'host' }),
       subscribe: () => () => {}, set: async () => {}, unset: async () => {},
     }) },
@@ -655,7 +655,7 @@ test('运行中的读取/编辑子调用不显示展开箭头（对齐原生 pre
   const registrations = []
   const ctx = {
     locale: { bind: () => key => key, register: () => () => {} },
-    settingsScope: { bind: () => ({
+    configForms: { get: () => ({
       getSnapshot: () => ({ status: 'ready', value: {}, base: {}, user: {}, revision: 0, writable: false, mode: 'host' }),
       subscribe: () => () => {}, set: async () => {}, unset: async () => {},
     }) },

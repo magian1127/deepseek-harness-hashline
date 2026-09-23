@@ -39,13 +39,16 @@ import {
 } from './presentation.js'
 
 export const name = 'dsh-hashline'
-export const inject = ['fs', 'tools', 'systemPrompt', 'settings', 'agents'] as const
+export const inject = ['fs', 'tools', 'systemPrompt', 'agents'] as const
 
 interface SchemaField {
   default(value: unknown): SchemaField
   step(value: number): SchemaField
   min(value: number): SchemaField
   max(value: number): SchemaField
+  /** DSH 0.1.7+ schemastery(3.18.3)提供易变标记;3.18.2 缺席时走 meta 直写。 */
+  volatile?(): SchemaField
+  meta?: Record<string, unknown>
 }
 
 interface SchemaFactory {
@@ -54,21 +57,37 @@ interface SchemaFactory {
   number(): SchemaField
 }
 
+function markVolatile(field: SchemaField): SchemaField {
+  if (field === null || field === undefined) return field
+  if (typeof field.volatile === 'function') return field.volatile()
+  // 旧 schemastery(3.18.2 无 .volatile()):直接打 meta.volatile——宿主
+  // volatileForm/diff 读的就是 meta。schema 实例是 function 类型,不能用
+  // typeof 'object' 守卫;旧版 resolve 不物化引用,变更按「重挂载生效」。
+  field.meta = { ...(field.meta ?? {}), volatile: true }
+  return field
+}
+
 export function createConfigSchema(z: SchemaFactory): unknown {
   return z.object({
-    enabled: z.boolean().default(true),
-    replaceBuiltinEdit: z.boolean().default(false),
-    replaceBuiltinEditInHeadless: z.boolean().default(false),
-    hashLength: z.number().step(1).min(3).max(16).default(DEFAULT_HASH_LENGTH),
-    readLimit: z.number().step(1).min(1).default(DEFAULT_READ_LIMIT),
-    maxLineLength: z.number().step(1).min(1).default(DEFAULT_MAX_LINE_LENGTH),
-    contextLines: z.number().step(1).min(0).max(20).default(DEFAULT_CONTEXT_LINES),
-    promptGuidance: z.boolean().default(true),
-    zhPrompt: z.boolean().default(false),
+    enabled: markVolatile(z.boolean().default(true)),
+    replaceBuiltinEdit: markVolatile(z.boolean().default(false)),
+    replaceBuiltinEditInHeadless: markVolatile(z.boolean().default(false)),
+    hashLength: markVolatile(z.number().step(1).min(3).max(16).default(DEFAULT_HASH_LENGTH)),
+    readLimit: markVolatile(z.number().step(1).min(1).default(DEFAULT_READ_LIMIT)),
+    maxLineLength: markVolatile(z.number().step(1).min(1).default(DEFAULT_MAX_LINE_LENGTH)),
+    contextLines: markVolatile(z.number().step(1).min(0).max(20).default(DEFAULT_CONTEXT_LINES)),
+    promptGuidance: markVolatile(z.boolean().default(true)),
+    zhPrompt: markVolatile(z.boolean().default(false)),
   })
 }
 
-const SETTINGS_NAMESPACE = 'hashline'
+// 宿主(DSH 0.1.7+)读取的插件 Config:字段全 volatile,配置表单(插件页)与
+// 实时生效都由宿主直接投影本 schema,值持久化在 profile 行 config。
+// profile 无 schemastery 时导出 undefined(不能是 null:宿主 settings 的
+// `'toJSON' in Config` 检查遇 null 会崩掉整页设置),宿主跳过 schema 校验,
+// config 以普通值传入(与旧版降级语义一致)。
+const configSchemaFactory = loadSchemastery() as SchemaFactory | null
+export const Config = configSchemaFactory === null ? undefined : createConfigSchema(configSchemaFactory)
 
 function hashlineError(
   code: HashlineErrorCode,
@@ -182,19 +201,6 @@ interface SystemPromptService {
     assemble?(context?: { scope?: unknown }): Promise<{ sections?: Array<{ name?: string; text?: string | ((context?: unknown) => string) }> }>
 }
 
-interface SettingsScope {
-  get(): Record<string, unknown>
-  watch(callback: (next: Record<string, unknown>, previous?: Record<string, unknown>) => void): () => void
-}
-
-interface SettingsService {
-  register(
-    namespace: string,
-    schema: unknown,
-    options: { base: Record<string, unknown>; applies: string; exposeToClients: boolean },
-  ): SettingsScope
-}
-
 interface Agent {
   id?: unknown
   // session.id 与 session.header.id 都是 DSH 会话标识(header.id 是历史/裸形态)。
@@ -246,7 +252,6 @@ interface ToolExec {
 interface DshContext {
   fs: FsService
   tools: ToolRegistration
-  settings: SettingsService
   systemPrompt: SystemPromptService
   agents: AgentsService
   logger?: { warn?: (message: string) => void }
@@ -344,6 +349,18 @@ function assertOnlyKeys(value: Record<string, unknown>, allowed: readonly string
   // edit 的 null 占位语义），忽略；非 null 的未知键仍响亮拒绝。
   const extras = Object.keys(value).filter((key) => !allowed.includes(key) && value[key] !== null)
   if (extras.length > 0) invalidArgument(messageText(zhPrompt, `${label} contains unsupported field(s): ${extras.join(', ')}`, `${label} 含不支持的键: ${extras.join(', ')}`))
+}
+
+/** 宿主物化的 volatile 引用(带 .get())读成普通值快照;普通字段原样保留
+ *  (Config 为 null、宿主跳过 schema 时的降级路径)。 */
+function readConfigSnapshot(config: Record<string, unknown> = {}): Record<string, unknown> {
+  const result: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(config)) {
+    result[key] = value !== null && typeof value === 'object' && typeof (value as { get?: unknown }).get === 'function'
+      ? (value as { get: () => unknown }).get()
+      : value
+  }
+  return result
 }
 
 function resolveConfig(config: Record<string, unknown> = {}): ResolvedConfig {
@@ -1586,28 +1603,14 @@ function installHostHotReload(ctx: DshContext): void {
 export function apply(ctx: DshContext, config: Record<string, unknown> = {}): void {
   // Keep tools live immediately; only source watching waits for the post-boot HMR service.
   ctx.inject(['hmr'], (hotContext) => installHostHotReload(hotContext as DshContext))
-  const baseConfig = resolveConfig(config)
+  // 配置快照:volatile 字段是宿主物化的引用,去引用后再做默认值归一化。
+  const readSnapshot = (): Record<string, unknown> => readConfigSnapshot(config)
   const sandbox = createSandboxController(ctx)
   let headlessMode = ctx.get('headlessStartup') !== undefined || ctx.get('openDesignStartup') !== undefined
 
-  // Config schema 从 profile 解析 schemastery 构造（与主进程同一实例）。
-  // profile 不可用时降级：不注册 settings UI，工具按传入配置工作。
-  const schemaFactory = loadSchemastery() as SchemaFactory | null
-  const Config = schemaFactory === null ? undefined : createConfigSchema(schemaFactory)
-  let settings: SettingsScope | undefined
-  if (Config !== undefined) {
-    settings = ctx.settings.register(SETTINGS_NAMESPACE, Config, {
-      base: baseConfig as unknown as Record<string, unknown>,
-      applies: 'live',
-      exposeToClients: true,
-    })
-  } else {
-    ctx.logger?.warn?.('dsh-hashline: schemastery unavailable from the profile; settings UI disabled')
-  }
-
   const globalDisposers: Array<() => void> = []
   const replacementDisposers = new Map<Agent, () => void>()
-  let current: ResolvedConfig = baseConfig
+  let current: ResolvedConfig = resolveConfig(readSnapshot())
   let stopped = false
 
   function clearReplacements(): void {
@@ -1759,15 +1762,13 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
     },
     'dsh-hashline: dynamic tool surface',
   )
-  ctx.effect(
-    () =>
-      settings === undefined
-        ? undefined
-        : settings.watch((next) => {
-            if (!stopped) refresh(next)
-          }),
-    'dsh-hashline: settings watch',
-  )
+  // 实时配置:宿主把 volatile 变更以引用提交进 config 并派发
+  // loader/volatile-update(仅本 fiber);重建快照并收敛全部表面。
+  // Config 导出为 null(schemastery 不可用)时 config 是普通值、事件不派发,
+  // 按初始快照工作。
+  ctx.on('loader/volatile-update', () => {
+    if (!stopped) refresh(readSnapshot())
+  })
   function agentBySession(sessionId: unknown): Agent | undefined {
     const list = (ctx.agents as unknown as AgentsService | undefined | null)?.list?.() ?? []
     return list.find(
@@ -1823,10 +1824,10 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
   const activateHeadlessMode = () => {
     if (headlessMode || stopped) return
     headlessMode = true
-    refresh((settings === undefined ? baseConfig : settings.get()) as Record<string, unknown>)
+    refresh(readSnapshot())
   }
   ctx.inject(['headlessStartup'], activateHeadlessMode)
   ctx.inject(['openDesignStartup'], activateHeadlessMode)
 
-  refresh((settings === undefined ? baseConfig : settings.get()) as Record<string, unknown>)
+  refresh(readSnapshot())
 }

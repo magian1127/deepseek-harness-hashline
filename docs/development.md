@@ -20,9 +20,9 @@
 
 ## 环境要求
 
-- DeepSeek Harness ≥ 0.1.5-rc.1；Web 使用 `web`，Open Design stdio 使用 `open-design`，DSH 一次性任务使用 `headless`
+- DeepSeek Harness ≥ 0.1.7-alpha.2；Web 使用 `web`，Open Design stdio 使用 `open-design`，DSH 一次性任务使用 `headless`
 - Node.js `^22.19.0 || >=24.0.0`
-- Web 配置表单要求 DSH ≥ 0.1.6（keyed Slot `plugins.bundle.config`，键为本包 npm 包名）；`open-design`/`headless` 只运行 Host 工具和设置门控
+- Web 配置表单要求 DSH ≥ 0.1.7-alpha.2（keyed Slot `plugins.bundle.config`，键为本包 npm 包名）；`open-design`/`headless` 只运行 Host 工具和设置门控
 
 ## 安装方式
 
@@ -103,7 +103,7 @@ npm run build
 以下结论以**当前进程的实际能力**为准，不把旧 rev 或 checkout 源码当成运行事实。
 
 - **Host 半边没有热通道**：官方 HMR 在 profile bundle 形态（`file:` 或 `link:`，模块 URL 含
-  `node_modules`）下被其默认 `ignored`（`**/node_modules`）排除；0.1.6-alpha.2 的 `hmr` 服务面
+  `node_modules`）下被其默认 `ignored`（`**/node_modules`）排除；0.1.7-alpha.2 的 `hmr` 服务面
   又只剩 `baseDir`/`runExclusive`/`watchConfig`/`getOuterStack`/`getLinked`，`registerConfig` /
   `partialReload` 已移除，旧的自注册自监视写法恒为 no-op。结论：改 `lib/` 后**由用户重启一次
   `dsh web`** 才会生效。
@@ -142,7 +142,8 @@ Open Design 必须核对 `open-design` profile，stock headless 核对 `headless
 - `ReadBlock` / `DisclosureRow` 的 props 契约以宿主当前源码为准（0.1.2-alpha.1 实测）：`ReadBlock` 的
   `labels` 必需、定位只接受 `className`；`DisclosureRow` 无 `style` prop。测试桩应断言 `labels` 七个字段
   齐全、`t` 座位注入时优先采用注入翻译，防止再次出现"折叠行正常、展开即崩"的静默回归。
-- Client 导出的硬依赖只包含当前平台实际提供的 `slots`、`locale`、`connection`、`remote`、`settingsScope`。
+- Client 导出的硬依赖只包含当前平台实际提供的 `slots`、`locale`、`connection`、`configForms`（DSH
+  0.1.7+，接替已退役的 `settingsScope`）。
   动态插件沙箱里的 `styles.insert()` 是 Builtin 而非静态 client module Service，不得写入 `inject`。测试应断言
   bundle 的 `inject` 精确列表，防止插件以 pending Fiber（`waiting for service: styles`）阻断 Web boot。
 

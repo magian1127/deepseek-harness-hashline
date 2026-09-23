@@ -11,7 +11,7 @@ process.env.DSH_HOME = fileURLToPath(new URL('./fixtures/dsh-home', import.meta.
 const require = createRequire(import.meta.url)
 const { HarnessError } = require('./fixtures/dsh-home/profiles/web/node_modules/@deepseek-ai/dsh-llm/index.cjs')
 
-const { apply } = await import('../lib/index.js')
+const { apply, Config } = await import('../lib/index.js')
 
 function codedError(code, message) {
   const error = new Error(message)
@@ -24,7 +24,13 @@ function createHarness(options = {}) {
   let versionNumber = 1
   let exists = options.exists ?? true
   let changeDuringFirstRead = options.changeDuringFirstRead ?? false
-  let settingsState
+  // 模拟宿主物化 volatile 引用:apply 直接收 config(字段带 .get()),实时
+  // 变更改状态对象后派发 loader/volatile-update(options.settings 为基线值)。
+  const configState = { ...(options.settings ?? {}) }
+  const config = {}
+  for (const [key, value] of Object.entries(configState)) {
+    config[key] = { get: () => configState[key] }
+  }
   const target = { targetKey: 'file-1', displayPath: 'C:\\workspace\\sample.txt' }
   const tools = new Map()
   const sections = new Map()
@@ -34,8 +40,6 @@ function createHarness(options = {}) {
   const waterfallCalls = []
   const policyRequests = []
   const approvalRequests = []
-  const settingsRegistrations = []
-  const settingsWatchers = new Set()
   const eventHandlers = new Map()
   const effectDisposers = []
   const liveAgents = []
@@ -206,24 +210,8 @@ function createHarness(options = {}) {
     },
   }
 
-  const settings = {
-    register(namespace, schema, registrationOptions) {
-      settingsState = { ...registrationOptions.base, ...(options.settings ?? {}) }
-      const scope = {
-        get: () => settingsState,
-        watch(callback) {
-          settingsWatchers.add(callback)
-          return () => settingsWatchers.delete(callback)
-        },
-      }
-      settingsRegistrations.push({ namespace, schema, options: registrationOptions, scope })
-      return scope
-    },
-  }
-
   const ctx = {
     fs,
-    settings,
     agents: {
       list: () => [...liveAgents],
     },
@@ -316,14 +304,16 @@ function createHarness(options = {}) {
     waterfallCalls,
     policyRequests,
     approvalRequests,
-    settingsRegistrations,
+    config,
     warnings,
     exec,
     agent,
     updateSettings(patch) {
-      const previous = settingsState
-      settingsState = { ...settingsState, ...patch }
-      for (const watcher of settingsWatchers) watcher(settingsState, previous)
+      Object.assign(configState, patch)
+      for (const [key, value] of Object.entries(configState)) {
+        if (config[key] === undefined) config[key] = { get: () => configState[key] }
+      }
+      dispatch('loader/volatile-update', [])
     },
     enableHeadless() {
       if (headlessActive) return
@@ -377,7 +367,7 @@ async function readAnchors(harness) {
 
 test('apply 注册两个工具和一个提示词 section', () => {
   const harness = createHarness()
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   assert.deepEqual([...harness.tools.keys()], ['hashline_read', 'hashline_edit'])
   assert.deepEqual([...harness.sections.keys()], ['tool:hashline'])
   assert.equal(harness.tools.get('hashline_read').isConcurrencySafe(), true)
@@ -419,28 +409,19 @@ test('zhPrompt=false 时提示词与工具说明保持英文', () => {
   assert.match(harness.sections.get('tool:hashline').text, /Use hashline_read followed by hashline_edit with edits/)
 })
 
-test('注册显式暴露的 Hashline 持久设置命名空间', () => {
-  const harness = createHarness()
-  apply(harness.ctx)
-
-  assert.equal(harness.settingsRegistrations.length, 1)
-  const registration = harness.settingsRegistrations[0]
-  assert.equal(registration.namespace, 'hashline')
-  assert.equal(registration.options.exposeToClients, true)
-  assert.equal(registration.options.applies, 'live')
-  assert.deepEqual(registration.options.base, registration.schema({}))
-  assert.equal(registration.schema({ replaceBuiltinEdit: true }).replaceBuiltinEdit, true)
-    assert.equal(registration.schema({}).replaceBuiltinEditInHeadless, false)
-    assert.equal(registration.schema({ replaceBuiltinEditInHeadless: true }).replaceBuiltinEditInHeadless, true)
-  assert.throws(() => registration.schema({ hashLength: 2 }))
+test('Config schema 导出:默认值与校验(宿主投影插件页表单的依据)', () => {
+  assert.equal(Config({}).replaceBuiltinEdit, false)
+  assert.equal(Config({ replaceBuiltinEdit: true }).replaceBuiltinEdit, true)
+  assert.equal(Config({}).replaceBuiltinEditInHeadless, false)
+  assert.equal(Config({ replaceBuiltinEditInHeadless: true }).replaceBuiltinEditInHeadless, true)
+  assert.throws(() => Config({ hashLength: 2 }))
 })
 
 test('全局开关实时卸载并恢复工具和提示词，但保留设置入口', () => {
   const harness = createHarness({ settings: { enabled: false } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   assert.equal(harness.tools.size, 0)
   assert.equal(harness.sections.size, 0)
-  assert.equal(harness.settingsRegistrations.length, 1)
 
   harness.updateSettings({ enabled: true })
   assert.deepEqual([...harness.tools.keys()], ['hashline_read', 'hashline_edit'])
@@ -453,7 +434,7 @@ test('全局开关实时卸载并恢复工具和提示词，但保留设置入�
 
 test('停用状态保留替换开关时，重新启用会立即为现有 Agent 安装严格 edit', () => {
   const harness = createHarness({ settings: { enabled: false, replaceBuiltinEdit: true } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   assert.equal(harness.viewTool('edit').source, 'tool-fs')
   assert.equal(harness.tools.size, 0)
 
@@ -476,7 +457,7 @@ test('停用状态保留替换开关时，重新启用会立即为现有 Agent �
 
 test('数值与提示词设置实时重建工具定义', async () => {
   const harness = createHarness()
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const previousRead = harness.tools.get('hashline_read')
 
   harness.updateSettings({ hashLength: 8, readLimit: 5, promptGuidance: false })
@@ -494,7 +475,7 @@ test('数值与提示词设置实时重建工具定义', async () => {
 
 test('replaceBuiltinEdit 对现有 Agent 可逆遮蔽内置 read/edit', async () => {
   const harness = createHarness({ content: 'a\nb\n', settings: { replaceBuiltinEdit: true } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
 
   const readTool = harness.viewTool('read')
   assert.equal(readTool.name, 'read')
@@ -545,7 +526,7 @@ test('replaceBuiltinEdit 对现有 Agent 可逆遮蔽内置 read/edit', async ()
 
 test('headless 默认不替换内置 read/edit，但保留显式 Hashline 工具', () => {
   const harness = createHarness({ headless: true, settings: { replaceBuiltinEdit: true } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
 
   assert.equal(harness.viewTool('read').source, 'tool-fs')
   assert.equal(harness.viewTool('edit').source, 'tool-fs')
@@ -557,7 +538,7 @@ test('headless 默认不替换内置 read/edit，但保留显式 Hashline 工具
 
 test('Open Design stdio 默认不替换内置 read/edit，但保留显式 Hashline 工具', () => {
   const harness = createHarness({ openDesign: true, settings: { replaceBuiltinEdit: true } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
 
   assert.equal(harness.viewTool('read').source, 'tool-fs')
   assert.equal(harness.viewTool('edit').source, 'tool-fs')
@@ -568,7 +549,7 @@ test('Open Design stdio 默认不替换内置 read/edit，但保留显式 Hashli
 
 test('openDesignStartup 延迟出现时按默认关闭门控撤销替换', () => {
   const harness = createHarness({ settings: { replaceBuiltinEdit: true } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   assert.equal(harness.viewTool('edit').source, undefined)
 
   harness.enableOpenDesign()
@@ -583,7 +564,7 @@ test('Open Design stdio 显式开启无头门控后替换内置 read/edit', () =
     openDesign: true,
     settings: { replaceBuiltinEdit: true, replaceBuiltinEditInHeadless: true },
   })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
 
   assert.equal(harness.viewTool('read').source, undefined)
   assert.equal(harness.viewTool('edit').source, undefined)
@@ -593,7 +574,7 @@ test('Open Design stdio 显式开启无头门控后替换内置 read/edit', () =
 
 test('headlessStartup 延迟出现时在 Agent 创建前撤销默认替换', () => {
   const harness = createHarness({ settings: { replaceBuiltinEdit: true } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   assert.equal(harness.viewTool('edit').source, undefined)
 
   harness.enableHeadless()
@@ -609,7 +590,7 @@ test('headless 仅在两个替换开关同时开启时遮蔽内置 read/edit', (
     headless: true,
     settings: { replaceBuiltinEdit: true, replaceBuiltinEditInHeadless: true },
   })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
 
   assert.equal(harness.viewTool('read').source, undefined)
   assert.equal(harness.viewTool('edit').source, undefined)
@@ -621,7 +602,7 @@ test('headless 仅在两个替换开关同时开启时遮蔽内置 read/edit', (
 
 test('headless 替换开关热切换可逆', () => {
   const harness = createHarness({ headless: true, settings: { replaceBuiltinEdit: true } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   assert.equal(harness.viewTool('edit').source, 'tool-fs')
 
   harness.updateSettings({ replaceBuiltinEditInHeadless: true })
@@ -637,7 +618,7 @@ test('非 headless 继续只由 replaceBuiltinEdit 控制替换', () => {
   const harness = createHarness({
     settings: { replaceBuiltinEdit: true, replaceBuiltinEditInHeadless: false },
   })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
 
   assert.equal(harness.viewTool('read').source, undefined)
   assert.equal(harness.viewTool('edit').source, undefined)
@@ -647,7 +628,7 @@ test('非 headless 继续只由 replaceBuiltinEdit 控制替换', () => {
 
 test('read/edit 替换覆盖后创建的 Agent，并尊重 preset 隐藏策略', () => {
   const harness = createHarness({ settings: { replaceBuiltinEdit: true } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
 
   const later = harness.createAgent('agent-2')
   assert.equal(harness.viewTool('edit', later).source, undefined)
@@ -678,7 +659,7 @@ test('read/edit 替换覆盖后创建的 Agent，并尊重 preset 隐藏策略',
 
 test('极简模式(minimal)下不注入 read/edit 替换并隐藏全局 Hashline 工具', () => {
   const harness = createHarness({ settings: { replaceBuiltinEdit: true } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
 
   // 极简 agent(createAgent 第 3 参传 preset id):不注册 own-scope read/edit
   // 替换、不注入提示词阴影,并把全局 hashline_read/hashline_edit 在 Agent 作用域
@@ -705,7 +686,7 @@ test('极简模式(minimal)下不注入 read/edit 替换并隐藏全局 Hashline
 
 test('未开启替换时极简模式仍隐藏全局 Hashline 工具(deny 与 replaceBuiltinEdit 无关)', () => {
   const harness = createHarness({ settings: { replaceBuiltinEdit: false } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
 
   // 非极简 agent:全局 hashline 工具按 enabled 可见,但不注册 own-scope read/edit
   // 替换(内置 read/edit 保持原版)。回归:曾因极简 deny 被放在替换分支内,
@@ -734,7 +715,7 @@ test('未开启替换时极简模式仍隐藏全局 Hashline 工具(deny 与 rep
 
 test('dsh-agent-presets 缺失时极简判断跳过,保持既有替换行为', () => {
   const harness = createHarness({ settings: { replaceBuiltinEdit: true }, agentPresetsService: false })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
 
   const plain = harness.createAgent('agent-no-presets')
   assert.equal(harness.viewTool('edit', plain).source, undefined)
@@ -745,7 +726,7 @@ test('dsh-agent-presets 缺失时极简判断跳过,保持既有替换行为', (
 
 test('会话中途切换到极简模式时撤销已安装的 read/edit 替换并 deny 全局工具', () => {
   const harness = createHarness({ settings: { replaceBuiltinEdit: true } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
 
   // 先以 cordis 创建:替换安装。
   const agent = harness.createAgent('agent-mid-switch', [], 'cordis')
@@ -780,7 +761,7 @@ test('会话中途切换到极简模式时撤销已安装的 read/edit 替换并
 
 test('已有 Agent scoped read/edit 冲突时保留原定义并回滚整组替换', () => {
   const harness = createHarness()
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
 
   const customRead = { name: 'read', source: 'custom-agent-read' }
   harness.agent.ctx.tools.register(customRead)
@@ -796,7 +777,7 @@ test('已有 Agent scoped read/edit 冲突时保留原定义并回滚整组替�
 
 test('插件卸载清理全局与 Agent scoped 副作用', () => {
   const harness = createHarness({ settings: { replaceBuiltinEdit: true } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   assert.equal(harness.viewTool('edit').source, undefined)
   assert.equal(harness.viewTool('read').source, undefined)
 
@@ -829,7 +810,7 @@ test('Host 源文件通过官方 HMR 服务热重载并随 Fiber 清理 watcher'
     },
   }
   const harness = createHarness({ hmr })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   await new Promise(resolve => setImmediate(resolve))
 
   assert.equal(callbacks.size, 4)
@@ -852,7 +833,7 @@ test('Host 源文件通过官方 HMR 服务热重载并随 Fiber 清理 watcher'
 
 test('hashline_read 使用会话 cwd、返回结构化锚点并记录观察', async () => {
   const harness = createHarness({ content: '\uFEFFa\r\nb\r\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const result = await readAnchors(harness)
 
   assert.equal(harness.resolveCalls[0].options.cwd, 'C:\\workspace')
@@ -866,7 +847,7 @@ test('hashline_read 使用会话 cwd、返回结构化锚点并记录观察', as
 
 test('hashline_read 对读取期间变化重试并只发布稳定版本', async () => {
   const harness = createHarness({ content: 'old\n', changeDuringFirstRead: true, changedContent: 'new\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const result = await readAnchors(harness)
   assert.equal(result.lines[0].text, 'new')
   assert.deepEqual(harness.observations.at(-1).args[1], { kind: 'present', version: 'v2' })
@@ -874,7 +855,7 @@ test('hashline_read 对读取期间变化重试并只发布稳定版本', async 
 
 test('hashline_read 在两次快照都不稳定时响亮失败', async () => {
   const harness = createHarness({ content: 'a\n', changeDuringEveryRead: true })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   await assert.rejects(readAnchors(harness), error => {
     assert.equal(error.code, 'HASHLINE_FILE_CHANGED_DURING_READ')
     return true
@@ -884,7 +865,7 @@ test('hashline_read 在两次快照都不稳定时响亮失败', async () => {
 
 test('hashline_read 拒绝越界窗口和超限 limit', async () => {
   const harness = createHarness({ content: 'a\nb\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const tool = harness.tools.get('hashline_read')
   await assert.rejects(
     tool.execute({ file_path: 'sample.txt', offset: 3 }, harness.exec),
@@ -902,7 +883,7 @@ test('hashline_read 拒绝越界窗口和超限 limit', async () => {
 
 test('缺失文件发布 absent 观察后失败', async () => {
   const harness = createHarness({ exists: false })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   await assert.rejects(readAnchors(harness), error => {
     assert.equal(error.code, 'HASHLINE_FILE_NOT_FOUND')
     return true
@@ -912,7 +893,7 @@ test('缺失文件发布 absent 观察后失败', async () => {
 
 test('hashline_edit 通过 write-intent 与当前版本 CAS 原子写入', async () => {
   const harness = createHarness({ content: 'a\nb\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   const result = await harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -931,7 +912,7 @@ test('hashline_edit 通过 write-intent 与当前版本 CAS 原子写入', async
 
 test('CRLF 编辑预览基于磁盘文本，返回锚点可立即继续编辑', async () => {
   const harness = createHarness({ content: '\uFEFFa\r\nb\r\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const firstRead = await readAnchors(harness)
   const firstEdit = await harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -956,7 +937,7 @@ test('readBytes 字节路径端到端：BOM 检测与编辑后保真（mock 对�
   // 解码会剥掉 UTF-8 BOM，导致 read 误报 bom=no、edit 后 BOM 静默丢失。
   // 修复后插件走 readBytes 字节路径自行保留 BOM 解码。
   const harness = createHarness({ content: '\uFEFFa\r\nb\r\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
 
   assert.equal(read.bom, true)
@@ -973,7 +954,7 @@ test('readBytes 字节路径端到端：BOM 检测与编辑后保真（mock 对�
 test('旧 DSH 无 readBytes 时回退 readText（BOM 保持历史行为但不再丢失已检测的元数据）', async () => {
   const harness = createHarness({ content: '\uFEFFa\r\nb\r\n' })
   delete harness.ctx.fs.readBytes
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
 
   // 回退路径与历史行为一致：readText 剥 BOM 后 splitTextFile 看不到 BOM。
@@ -988,7 +969,7 @@ test('旧 DSH 无 readBytes 时回退 readText（BOM 保持历史行为但不再
 test('readBytes 字节路径拒绝二进制/无效 UTF-8（fatal 解码映射 FS_NOT_TEXT 同义错误）', async () => {
   // 字节路径自行 fatal 解码；无效 UTF-8 抛 HASHLINE_INVALID_ARGUMENT 同义错误而非崩溃。
   const harness = createHarness({ content: 'a\nb\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   // 直接把 mock 内容换成含无效 UTF-8 字节的 Buffer 形态：通过临时覆写 readBytes 返回值。
   const fsSvc = harness.ctx.fs
   const original = fsSvc.readBytes
@@ -1002,7 +983,7 @@ test('readBytes 字节路径拒绝二进制/无效 UTF-8（fatal 解码映射 FS
 
 test('锚点过期时不调用 writeText', async () => {
   const harness = createHarness({ content: 'a\nb\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   harness.content = 'a\nchanged\n'
 
@@ -1020,7 +1001,7 @@ test('锚点过期时不调用 writeText', async () => {
 
 test('写入前并发变化映射为可恢复的 FS_STALE_VERSION', async () => {
   const harness = createHarness({ content: 'a\n', staleBeforeWrite: true })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
 
   await assert.rejects(harness.tools.get('hashline_edit').execute({
@@ -1036,7 +1017,7 @@ test('写入前并发变化映射为可恢复的 FS_STALE_VERSION', async () => 
 
 test('沙箱策略接收调用会话，解析路径和写入使用同一 workspaceRoot', async () => {
   const harness = createHarness({ content: 'a\n', sandboxMode: 'workspace-write' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   await harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1065,7 +1046,7 @@ test('受限文件系统才公开升级字段', () => {
 
 test('一次性升级先审批，再把批准模式传给写入', async () => {
   const harness = createHarness({ content: 'a\n', sandboxMode: 'workspace-write' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   await harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1081,7 +1062,7 @@ test('一次性升级先审批，再把批准模式传给写入', async () => {
 
 test('沙箱拒绝映射为统一标记且不写入', async () => {
   const harness = createHarness({ content: 'a\n', sandboxMode: 'workspace-write', denyWrite: true })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
 
   await assert.rejects(harness.tools.get('hashline_edit').execute({
@@ -1098,7 +1079,7 @@ test('沙箱拒绝映射为统一标记且不写入', async () => {
 
 test('未知参数和无效配置响亮失败', async () => {
   const harness = createHarness()
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   await assert.rejects(
     harness.tools.get('hashline_read').execute({ file_path: 'sample.txt', typo: true }, harness.exec),
     error => error.code === 'HASHLINE_INVALID_ARGUMENT',
@@ -1113,7 +1094,7 @@ test('未知参数和无效配置响亮失败', async () => {
 
 test('畸形编辑在 sandbox、审批和文件 I/O 前失败', async () => {
   const harness = createHarness({ sandboxMode: 'workspace-write' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
 
   await assert.rejects(harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1129,7 +1110,7 @@ test('畸形编辑在 sandbox、审批和文件 I/O 前失败', async () => {
 
 test('同一 edits 项包含多个操作时在 sandbox、审批和文件 I/O 前拒绝', async () => {
   const harness = createHarness({ sandboxMode: 'workspace-write' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
 
   await assert.rejects(harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1153,7 +1134,7 @@ test('同一 edits 项包含多个操作时在 sandbox、审批和文件 I/O 前
 
 test('无 agent 编辑在策略和 I/O 前失败', async () => {
   const harness = createHarness({ content: 'a\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   const resolvesBeforeEdit = harness.resolveCalls.length
   const exec = { ...harness.exec, agent: undefined }
@@ -1168,7 +1149,7 @@ test('无 agent 编辑在策略和 I/O 前失败', async () => {
 
 test('编辑参数 schema 保持根级 object，items 为扁平 op 判别形状', () => {
   const harness = createHarness()
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const parameters = harness.tools.get('hashline_edit').parameters
   // 模型路由要求工具参数根节点为 type: object；0.3.0 起 items 是扁平 op 判别
   // 形状（根 → 数组 → 平铺键值，无嵌套对象、无 oneOf），避免深层嵌套导致的
@@ -1188,7 +1169,7 @@ test('编辑参数 schema 保持根级 object，items 为扁平 op 判别形状'
   // 替换模式下的 scoped edit 与全局工具形状一致（同一锚定-only schema）；
   // 文案里的 readToolName 相应换为 read。
   const strictHarness = createHarness({ settings: { replaceBuiltinEdit: true } })
-  apply(strictHarness.ctx)
+  apply(strictHarness.ctx, strictHarness.config)
   const strictParameters = strictHarness.viewTool('edit').parameters
   assert.deepEqual(strictParameters.required, ['file_path', 'edits'])
   assert.deepEqual(Object.keys(strictParameters.properties).sort(), ['edits', 'file_path'])
@@ -1203,7 +1184,7 @@ test('编辑参数 schema 保持根级 object，items 为扁平 op 判别形状'
 
 test('hashline_read 模型文本与原生读取卡都在行号后保留哈希', async () => {
   const harness = createHarness({ content: 'alpha\nbeta = 1\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const tool = harness.tools.get('hashline_read')
   const result = await tool.execute({ file_path: 'sample.txt' }, harness.exec)
 
@@ -1240,7 +1221,7 @@ test('hashline_read 模型文本与原生读取卡都在行号后保留哈希', 
 
 test('hashline_read 模型结果报告 CRLF 与 BOM 元数据', async () => {
   const harness = createHarness({ content: '\uFEFFalpha\r\nbeta\r\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const tool = harness.tools.get('hashline_read')
   const result = await tool.execute({ file_path: 'sample.txt' }, harness.exec)
   const [block] = tool.output.render({}, result)
@@ -1251,7 +1232,7 @@ test('hashline_read 模型结果报告 CRLF 与 BOM 元数据', async () => {
 })
 test('hashline_read presentResult 对错误与畸形数据回退 undefined', async () => {
   const harness = createHarness({ content: 'a\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const tool = harness.tools.get('hashline_read')
 
   assert.equal(tool.presentResult({}, { content: [], isError: true }), undefined)
@@ -1272,7 +1253,7 @@ test('hashline_read presentResult 对错误与畸形数据回退 undefined', asy
 
 test('hashline_edit 拒绝 old_string/new_string 并指引使用内置 edit', async () => {
   const harness = createHarness({ content: 'alpha\nbeta = 1\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const tool = harness.tools.get('hashline_edit')
   const resolvesBefore = harness.resolveCalls.length
   await assert.rejects(tool.execute({
@@ -1327,7 +1308,7 @@ test('hashline_edit 忽略适配器为未选变体物化的空哨兵', async () 
 
 test('hashline_edit 忽略未使用字段的 null 占位（对齐官方 v0.1.2）', async () => {
   const harness = createHarness({ content: 'alpha\nbeta = 2\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   await harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1349,7 +1330,7 @@ test('hashline_edit 忽略未使用字段的 null 占位（对齐官方 v0.1.2�
 
 test('hashline_edit 拒绝混合或缺失的两种输入', async () => {
   const harness = createHarness({ content: 'a\n', sandboxMode: 'workspace-write' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const tool = harness.tools.get('hashline_edit')
   const read = await readAnchors(harness)
   const resolvesBefore = harness.resolveCalls.length
@@ -1374,7 +1355,7 @@ test('hashline_edit 拒绝混合或缺失的两种输入', async () => {
 
 test('hashline_edit presentCall 对任何输入都保持简洁 edit intent', async () => {
   const harness = createHarness({ content: 'a\nb\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const tool = harness.tools.get('hashline_edit')
 
   // 锚定编辑没有旧文本可展示，不伪造 diff；旧 native 输入同样只是 generic
@@ -1392,7 +1373,7 @@ test('hashline_edit presentCall 对任何输入都保持简洁 edit intent', asy
 
 test('hashline_edit 成功结果生成 diff meta 与原生 diff 卡，无变化时安全回退', async () => {
   const harness = createHarness({ content: 'alpha\nbeta\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const tool = harness.tools.get('hashline_edit')
   const read = await readAnchors(harness)
   const result = await tool.execute({
@@ -1439,7 +1420,7 @@ test('hashline_edit 成功结果生成 diff meta 与原生 diff 卡，无变化�
 
 test('hashline_edit presentResult 对错误与畸形 meta 回退 undefined', async () => {
   const harness = createHarness({ content: 'a\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const tool = harness.tools.get('hashline_edit')
 
   assert.equal(tool.presentResult({ file_path: 'sample.txt' }, { content: [], isError: true }), undefined)
@@ -1457,7 +1438,7 @@ test('hashline_edit presentResult 对错误与畸形 meta 回退 undefined', asy
 
 test('hashline_edit 模型文本保留确认与变更窗口上下文', async () => {
   const harness = createHarness({ content: 'alpha\nbeta\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const tool = harness.tools.get('hashline_edit')
   const read = await readAnchors(harness)
   const result = await tool.execute({
@@ -1472,7 +1453,7 @@ test('hashline_edit 模型文本保留确认与变更窗口上下文', async () 
 
 test('CRLF 文件编辑的展示 diff 已归一为 LF 且写入保真不变', async () => {
   const harness = createHarness({ content: '\uFEFFa\r\nb\r\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   const result = await harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1506,7 +1487,7 @@ test('hashline_read 长行截断同时反映在模型文本与 UI 投影', async
 
 test('替换模式下 scoped read/edit 的展示契约与全局工具一致', async () => {
   const harness = createHarness({ content: 'alpha\nbeta\n', settings: { replaceBuiltinEdit: true } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const readTool = harness.viewTool('read')
   const editTool = harness.viewTool('edit')
   assert.equal(readTool.name, 'read')
@@ -1544,7 +1525,7 @@ test('替换模式下 scoped read/edit 的展示契约与全局工具一致', as
 
 test('替换模式下 scoped edit 使用 edit/read 错误名并严格拒绝无锚点输入', async () => {
   const harness = createHarness({ content: 'alpha\nbeta\n', settings: { replaceBuiltinEdit: true } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const readTool = harness.viewTool('read')
   const editTool = harness.viewTool('edit')
 
@@ -1594,7 +1575,7 @@ test('替换模式下 scoped edit 使用 edit/read 错误名并严格拒绝无�
 
 test('方言回收：空壳变体 + 根级散落字段（样本①）无歧义恢复', async () => {
   const harness = createHarness({ content: 'a\nb\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   // 模型原始样本形状：edits 项只剩空壳，anchor/new_text 散落在参数根级。
   const result = await harness.tools.get('hashline_edit').execute({
@@ -1610,7 +1591,7 @@ test('方言回收：空壳变体 + 根级散落字段（样本①）无歧义�
 
 test('方言回收：数字键影子 + 项内字段提升（样本②）折叠为单次写入', async () => {
   const harness = createHarness({ content: 'a\nb\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   // 模型原始样本形状：edits[0] 的 new_text 被提升到项级、set_line 只剩 anchor；
   // 同一操作又被物化为根级数字键 "0"；根级另有完整散落副本。
@@ -1631,7 +1612,7 @@ test('方言回收：数字键影子 + 项内字段提升（样本②）折叠�
 
 test('方言回收：完全丢失 edits 信封的根级单操作也被接受', async () => {
   const harness = createHarness({ content: 'a\nb\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   const result = await harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1642,7 +1623,7 @@ test('方言回收：完全丢失 edits 信封的根级单操作也被接受', a
 })
 test('op 缺省方言：忘传 op 的锚点+new_text 项按 set_line 执行（高频失败样本）', async () => {
   const harness = createHarness({ content: 'a\nb\nc\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   const result = await harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1655,7 +1636,7 @@ test('op 缺省方言：忘传 op 的锚点+new_text 项按 set_line 执行（�
 
 test('op 缺省方言：双锚点字段按 replace_lines 执行', async () => {
   const harness = createHarness({ content: 'a\nb\nc\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   await harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1667,7 +1648,7 @@ test('op 缺省方言：双锚点字段按 replace_lines 执行', async () => {
 
 test('op 缺省方言：混用两族锚点字段拒绝且不写入', async () => {
   const harness = createHarness({ content: 'a\nb\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   await assert.rejects(harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1678,7 +1659,7 @@ test('op 缺省方言：混用两族锚点字段拒绝且不写入', async () =>
 
 test('方言回收：多处散落字段值冲突时拒绝且不写入', async () => {
   const harness = createHarness({ content: 'a\nb\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   await assert.rejects(harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1695,7 +1676,7 @@ test('方言回收：多处散落字段值冲突时拒绝且不写入', async ()
 
 test('方言回收：无法恢复时错误附带结构指纹与 canonical 模板', async () => {
   const harness = createHarness({ content: 'a\nb\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   await assert.rejects(harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
     edits: [],
@@ -1710,7 +1691,7 @@ test('方言回收：无法恢复时错误附带结构指纹与 canonical 模板
 
 test('方言回收：回收成功时结果文本注明 normalized 与正确形状', async () => {
   const harness = createHarness({ content: 'a\nb\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   const result = await harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1726,7 +1707,7 @@ test('方言回收：回收成功时结果文本注明 normalized 与正确形�
 
 test('方言回收：未知顶层键在回收后仍响亮拒绝', async () => {
   const harness = createHarness({ content: 'a\nb\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await readAnchors(harness)
   await assert.rejects(harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1743,7 +1724,7 @@ test('方言回收：未知顶层键在回收后仍响亮拒绝', async () => {
 
 test('hashline_read 在 stat size 超限时于 readText 前拒绝', async () => {
   const harness = createHarness({ content: 'a'.repeat(50 * 1024 + 1) })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const tool = harness.tools.get('hashline_read')
   await assert.rejects(tool.execute({ file_path: 'sample.txt' }, harness.exec), error => {
     assert.equal(error.code, 'HASHLINE_FILE_TOO_LARGE')
@@ -1754,7 +1735,7 @@ test('hashline_read 在 stat size 超限时于 readText 前拒绝', async () => 
 
 test('hashline_read 显式 limit 窗口可读取超限文件', async () => {
   const harness = createHarness({ content: 'a'.repeat(50 * 1024 + 1) })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const result = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt', limit: 1 }, harness.exec)
   assert.equal(result.totalLines, 1)
   assert.equal(result.lines.length, 1)
@@ -1764,7 +1745,7 @@ test('hashline_read 显式 offset 窗口读取超限多行文件并返回锚点'
   const harness = createHarness({
     content: Array.from({ length: 600 }, (_, i) => `${String(i).padStart(4, '0')} ${'b'.repeat(100)}`).join('\n'),
   })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const result = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt', offset: 3, limit: 2 }, harness.exec)
   assert.equal(result.totalLines, 600)
   assert.equal(result.lines.length, 2)
@@ -1773,7 +1754,7 @@ test('hashline_read 显式 offset 窗口读取超限多行文件并返回锚点'
 
 test('hashline_read 把 offset/limit 的 null 占位按未提供处理', async () => {
   const harness = createHarness({ content: 'a\nb\nc\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const result = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt', offset: null, limit: null }, harness.exec)
   assert.equal(result.totalLines, 3)
   assert.equal(result.lines.length, 3)
@@ -1784,7 +1765,7 @@ test('hashline_edit 可编辑超限文件（窗口锚点 + CAS 写入）', async
   const harness = createHarness({
     content: Array.from({ length: 600 }, (_, i) => `${String(i).padStart(4, '0')} ${'b'.repeat(100)}`).join('\n'),
   })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt', offset: 3, limit: 1 }, harness.exec)
   const result = await harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1797,7 +1778,7 @@ test('hashline_edit 可编辑超限文件（窗口锚点 + CAS 写入）', async
 
 test('hashline_read 保持 readLimit 行数限制', async () => {
   const harness = createHarness({ content: Array.from({ length: 10 }, (_, i) => `line-${i}`).join('\n') })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const result = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt', limit: 2 }, harness.exec)
   assert.equal(result.lines.length, 2)
   assert.equal(result.totalLines, 10)
@@ -1805,7 +1786,7 @@ test('hashline_read 保持 readLimit 行数限制', async () => {
 
 test('hashline_edit 拒绝超长 new_text 且不触发文件 I/O', async () => {
   const harness = createHarness()
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   await assert.rejects(harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
     edits: [{ op: 'set_line', anchor: '1:aaaa', new_text: 'x'.repeat(50 * 1024 + 1) }],
@@ -1819,7 +1800,7 @@ test('hashline_edit 拒绝超长 new_text 且不触发文件 I/O', async () => {
 
 test('hashline_edit 扁平 set_line 空 new_text 删除该行', async () => {
   const harness = createHarness({ content: 'a\nb\nc\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt' }, harness.exec)
   const result = await harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1832,7 +1813,7 @@ test('hashline_edit 扁平 set_line 空 new_text 删除该行', async () => {
 
 test('hashline_edit 嵌套 set_line 空 new_text 删除该行（方言回收不吞空串）', async () => {
   const harness = createHarness({ content: 'a\nb\nc\n' })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const read = await harness.tools.get('hashline_read').execute({ file_path: 'sample.txt' }, harness.exec)
   const result = await harness.tools.get('hashline_edit').execute({
     file_path: 'sample.txt',
@@ -1845,7 +1826,7 @@ test('hashline_edit 嵌套 set_line 空 new_text 删除该行（方言回收不�
 
 test('scoped prompt 第二段注册失败会回滚 deny 和替换表面', () => {
   const harness = createHarness({ settings: { replaceBuiltinEdit: false } })
-  apply(harness.ctx)
+  apply(harness.ctx, harness.config)
   const section = harness.agent.ctx.systemPrompt.section
   harness.agent.ctx.systemPrompt.section = definition => {
     if (definition.name === 'tool:edit') throw new Error('second prompt section failed')

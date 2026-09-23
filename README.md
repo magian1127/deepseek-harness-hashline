@@ -10,7 +10,7 @@
 
 <p align="center">
   <img alt="状态 测试中" src="https://img.shields.io/badge/状态-测试中-ff6b6b">
-  <img alt="版本 0.3.2" src="https://img.shields.io/badge/版本-0.3.2-5965d8">
+  <img alt="版本 0.3.3" src="https://img.shields.io/badge/版本-0.3.3-5965d8">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-3b7a57">
 </p>
 
@@ -47,9 +47,9 @@ Open Design（`open-design` profile）与 DSH 一次性 `headless` 默认仍使�
 
 ## 环境要求
 
-- DeepSeek Harness ≥ 0.1.5-rc.1；Web GUI 使用 `web` profile，Open Design stdio 使用 `open-design` profile，DSH 一次性任务使用 `headless` profile
+- DeepSeek Harness ≥ 0.1.7-alpha.2；Web GUI 使用 `web` profile，Open Design stdio 使用 `open-design` profile，DSH 一次性任务使用 `headless` profile
 - Node.js `^22.19.0 || >=24.0.0`
-- 网页配置表单还要求 DSH ≥ 0.1.6（`plugins.bundle.config` 槽位）；`open-design`/`headless` 只运行 Host 半边
+- `open-design`/`headless` 只运行 Host 半边（无 Web 配置表单）
 
 ## 安装
 

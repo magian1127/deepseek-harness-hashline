@@ -3,7 +3,9 @@ import { DisclosureRow, ReadBlock, StateDot, writeClipboard } from '@deepseek-ai
 
 const h = React.createElement
 
-const SETTINGS_NAMESPACE = 'hashline'
+// DSH 0.1.7 起 settings 命名空间退役,配置值挂在插件行 config 上;
+// configForms 服务按入口 id(profile 行 id)取 ConfigForm。
+const CONFIG_ENTRY_ID = 'tool-hashline'
 const LOCALE_NAMESPACE = 'settings.hashline'
 /** plugins.bundle.config 槽位的键:profile 中本包的 npm 包名(非 settings 命名空间)。 */
 const BUNDLE_PACKAGE_NAME = 'deepseek-harness-hashline'
@@ -871,20 +873,29 @@ function filePathFromBlock(block: any): string | undefined {
   }
 function apply(ctx: any): void {
   const t = ctx.locale.bind(LOCALE_NAMESPACE)
-  const scope = ctx.settingsScope.bind({ namespace: SETTINGS_NAMESPACE })
-  const ConfigPage = createForm(scope, t)
+  // 旧 settingsScope 已随 settings 命名空间退役;经 configForms 按入口 id
+  // 取 ConfigForm:snapshot/subscribe/set 面与旧 settingsScope 同构。
+  const configForms = ctx.configForms
+  const scope = configForms !== undefined && configForms !== null && typeof configForms.get === 'function'
+    ? configForms.get(CONFIG_ENTRY_ID)
+    : undefined
+  const ConfigPage = scope === undefined ? undefined : createForm(scope, t)
   ctx.effect(function () {
     return ctx.locale.register(LOCALE_NAMESPACE, { zh, en })
   }, 'dsh-hashline: settings dictionaries')
   // 插件页组合包页面:键必须是 profile 里本包的 npm 包名(见
-  // plugins.bundle.config 槽位契约),settings 命名空间与写入协议不变。
-  ctx.slots.inject('plugins.bundle.config', function () {
-    return ctx.slots.register({
-      name: 'plugins.bundle.config',
-      key: BUNDLE_PACKAGE_NAME,
-      locale: LOCALE_NAMESPACE,
-    }, ConfigPage)
-  })
+  // plugins.bundle.config 槽位契约);读写走 configForms(行 config)。
+  if (ConfigPage !== undefined) {
+    ctx.slots.inject('plugins.bundle.config', function () {
+      return ctx.slots.register({
+        name: 'plugins.bundle.config',
+        key: BUNDLE_PACKAGE_NAME,
+        locale: LOCALE_NAMESPACE,
+      }, ConfigPage)
+    })
+  } else {
+    console.warn('[dsh-hashline] configForms 服务不可用,设置卡片未注册')
+  }
   const HashlineReadRow = createHashlineReadRow(t)
   const HashlineEditRow = createHashlineEditRow()
 
@@ -893,33 +904,36 @@ function apply(ctx: any): void {
     yield ctx.slots.register({ name: 'tool.call.toolview', key: 'hashline_edit', locale: LOCALE_NAMESPACE }, HashlineEditRow)
   })
   // 只有 Host 确实用 Hashline 替换内置 read 时才接管 shipped `read-row`；
-  // 默认模式绝不遮蔽普通内置 read 的原生工具卡。
-  ctx.effect(function () {
-    let disposeBuiltins: (() => void) | undefined
-    const sync = function () {
-      const value = scope.getSnapshot().value
-      const shouldOwnBuiltins = value?.enabled === true && value?.replaceBuiltinEdit === true
-      if (shouldOwnBuiltins && disposeBuiltins === undefined) {
-        disposeBuiltins = ctx.slots.inject('tool.call.toolview', function* () {
-          // Shipped read/edit toolviews occupy priority 0. Keyed slots render the
-          // lowest live priority, so -100 shadows them without replacing their Fiber;
-          // disposing this contribution restores the shipped rows immediately.
-          yield ctx.slots.register({ name: 'tool.call.toolview', key: 'read', priority: -100, locale: LOCALE_NAMESPACE }, HashlineReadRow)
-          yield ctx.slots.register({ name: 'tool.call.toolview', key: 'edit', priority: -100, locale: LOCALE_NAMESPACE }, HashlineEditRow)
-        })
-      } else if (!shouldOwnBuiltins && disposeBuiltins !== undefined) {
-        disposeBuiltins()
-        disposeBuiltins = undefined
+  // 默认模式绝不遮蔽普通内置 read 的原生工具卡。configForms 不可用时跳过
+  // (无从得知 Host 侧 replaceBuiltinEdit,保持默认不接管)。
+  if (scope !== undefined) {
+    ctx.effect(function () {
+      let disposeBuiltins: (() => void) | undefined
+      const sync = function () {
+        const value = scope.getSnapshot().value
+        const shouldOwnBuiltins = value?.enabled === true && value?.replaceBuiltinEdit === true
+        if (shouldOwnBuiltins && disposeBuiltins === undefined) {
+          disposeBuiltins = ctx.slots.inject('tool.call.toolview', function* () {
+            // Shipped read/edit toolviews occupy priority 0. Keyed slots render the
+            // lowest live priority, so -100 shadows them without replacing their Fiber;
+            // disposing this contribution restores the shipped rows immediately.
+            yield ctx.slots.register({ name: 'tool.call.toolview', key: 'read', priority: -100, locale: LOCALE_NAMESPACE }, HashlineReadRow)
+            yield ctx.slots.register({ name: 'tool.call.toolview', key: 'edit', priority: -100, locale: LOCALE_NAMESPACE }, HashlineEditRow)
+          })
+        } else if (!shouldOwnBuiltins && disposeBuiltins !== undefined) {
+          disposeBuiltins()
+          disposeBuiltins = undefined
+        }
       }
-    }
-    sync()
-    const unsubscribe = scope.subscribe(sync)
-    return function () {
-      unsubscribe()
-      disposeBuiltins?.()
-    }
-  }, 'dsh-hashline: scoped read/edit toolviews')
+      sync()
+      const unsubscribe = scope.subscribe(sync)
+      return function () {
+        unsubscribe()
+        disposeBuiltins?.()
+      }
+    }, 'dsh-hashline: scoped read/edit toolviews')
+  }
 }
 
-export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope']
+export const inject = ['slots', 'locale', 'connection', 'configForms']
 export { apply }

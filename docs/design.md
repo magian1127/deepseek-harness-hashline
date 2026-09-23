@@ -111,10 +111,10 @@ BOM 静默丢失。旧 DSH 无 `readBytes` 时回退 `readText`（BOM 维持历�
 - `fs/observed` 同步读写版本；
 - `fs/write-intent` 保留策略组合点；
 - `writeText(..., replaceIfVersion)` 防止校验后到写入前的并发覆盖；
-- `settings.register('hashline', Config)` 注册持久用户覆盖层（`SettingsRegisterOptions` 只有
-  `base`/`applies`/`validate`，没有 `exposeToClients`）；客户端配置表单要求 DSH 0.1.6+ 的
-  `plugins.bundle.config` 槽位；
-- `settings.watch(...)` 实时重建工具和提示词表面；
+- 导出插件 `Config`（DSH 0.1.7+，字段全 `.volatile()`）：宿主据此投影插件页配置表单，
+  值持久化在 profile 行 config，volatile 变更以引用物化进 `config` 参数（旧版
+  `settings.register` 命名空间机制已随 `settings.yaml` 一并退役）；
+- `loader/volatile-update` 事件实时重建工具和提示词表面；
 - `agents.list()` 与 `agent/created` 为现有及新 Agent 安装可选 scoped `edit`。
 - `headlessStartup` / `openDesignStartup` 的同步探测与延迟 inject 用于计算 `replaceBuiltinEditInHeadless`；它只改变同名替换，不改变全局 Hashline 工具注册；
 
@@ -145,15 +145,16 @@ scoped effect 已展开之后，因此这里只移除生命周期索引，不重
 本插件以 profile bundle 形态安装时，模块 URL 落在 `node_modules/<包名>/` 下，会被官方 watcher 的
 默认 `ignored`（`**/node_modules`）排除，**即使其 root 覆盖本目录也不会被跟踪**。
 
-0.1.6-alpha.2 的 `hmr` 服务面只剩 `baseDir` / `runExclusive` / `watchConfig` / `getOuterStack` /
+0.1.7-alpha.2 的 `hmr` 服务面只剩 `baseDir` / `runExclusive` / `watchConfig` / `getOuterStack` /
 `getLinked`——`registerConfig` / `partialReload` / `stashed` 已移除，旧的自注册精确自监视写法
 （`hmr.registerConfig(...)`）在当前版本恒为 no-op。因此本插件不实现也不复制 profile 热安装
 监督器：**Host 半边的新构建不会进入长跑进程**（Node ESM 缓存按 URL 命中旧模块），改动 `lib/`
 后需由用户重启一次 `dsh web`。Client 半边不受此限，见 `docs/development.md` 的热更新一节。
 
-Web client 通过 `settingsScope.bind({ namespace: 'hashline' })` 读写同一 Host namespace，并向
-`plugins.bundle.config` keyed slot 以本包 npm 包名注册插件页配置表单（DSH 0.1.6+，接替已退役
-的 `settings.plugin.item`）。它不直接访问文件、不使用`localStorage`，也不定义自有网络协议。
+Web client 通过 `ctx.configForms.get('tool-hashline')`（入口 id = profile 行 id）读写 Host 行
+config，并向 `plugins.bundle.config` keyed slot 以本包 npm 包名注册插件页配置表单（DSH 0.1.6+
+槽位；0.1.7 起写入走 configForms，旧 `settingsScope` 已退役）。它不直接访问文件、不使用
+`localStorage`，也不定义自有网络协议。
 
 `HashlineError` 继承宿主的 `HarnessError`，让 `HASHLINE_*` 和映射后的 `FS_*` code 进入结构化 ToolResult，供模型重试、UI 和自动化按 code 分支。`HarnessError` 经 `src/profile-modules.ts` 从 profile 解析加载，与主进程使用同一实例；profile 不可用时降级为普通 `Error`，避免加载第二份 `dsh-llm`。
 
