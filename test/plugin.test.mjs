@@ -1852,3 +1852,21 @@ test('CLI rejects traversal profile names before resolving profile paths', () =>
   assert.equal(result.status, 1)
   assert.match(result.stderr, /invalid profile name .*non-empty profile name without path separators/)
 })
+
+test('profile 探测：桌面版 Electron Host（argv 无 --profile）判为 desktop', async () => {
+  const { profileNameFrom } = await import('../lib/profile-modules.js')
+  assert.equal(profileNameFrom(['node', 'bin.js', 'web', '--no-open'], undefined), 'web')
+  assert.equal(profileNameFrom(['node', 'bin.js', 'web', '--profile', 'my-prof'], undefined), 'my-prof')
+  assert.equal(profileNameFrom(['node', 'host.js', '--expose-internals'], '37.2.0'), 'desktop')
+  assert.equal(profileNameFrom(['node', 'host.js', '--expose-internals', '--profile', 'x'], '37.2.0'), 'x')
+  assert.equal(profileNameFrom(['node', 'bin.js', 'web', '--profile'], '37.2.0'), 'desktop')
+})
+
+test('CLI 拒绝改动 desktop profile 并指向桌面应用插件页', () => {
+  const result = spawnSync(process.execPath, ['bin/dsh-hashline.mjs', 'install', '--profile', 'desktop'], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
+    encoding: 'utf8',
+  })
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /desktop profile 由桌面应用独占管理/)
+})

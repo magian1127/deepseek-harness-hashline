@@ -70,9 +70,16 @@ dsh plugin --profile headless add "link:<绝对路径>/deepseek-harness-hashline
 ## Peer 解析
 
 运行时 peer `@deepseek-ai/dsh-llm` 和 `@deepseek-ai/schemastery` 不写入本包依赖：`src/profile-modules.ts`
-在运行时用 `createRequire` 从当前 profile 的解析上下文加载它们，因此与主进程拿到同一模块实例
-（同一份 `HarnessError` 与 schemastery），`file:` 与 `link:` 安装走同一条回退路径；加载失败时降级为
-普通 `Error` 并关闭 settings UI，而不是启动失败。
+在运行时从当前 profile 的解析上下文加载它们，因此与主进程同一来源（同一份 `HarnessError` 与
+schemastery），`file:` 与 `link:` 安装走同一条路径；加载失败时降级为普通 `Error` 并关闭 settings
+UI，而不是启动失败。
+
+加载契约（DSH 0.1.7-rc 起）：宿主组合批次经模块 hooks 管线并行动态 import 官方插件的 ESM，
+插件在同步求值里 `require(esm)`（含目标包 CJS 入口内部的 require）会撞 Node 的「not yet fully
+loaded」，且管线正被自身同步栈阻塞，任何同步重试都无效。因此 `src/profile-modules.ts` 在模块
+顶层用 `require.resolve` 只解析（不求值、无竞态）、读 exports 取 `import` 条目、以文件 URL 异步
+`import` 预载（TLA），整条依赖链随同一条管线串行交付；预载失败后才走同步 require 兜底（脱离
+profile 的测试/CLI 环境），再失败即永久降级。
 
 展示层依赖 `diff`（^9.0.0，与 DSH 原生 tool-fs 同库同上下文策略）写入本包 `dependencies`；它是纯运行时
 依赖，`npm install` 后由 Node 从本包目录解析，不依赖 profile 提供。
@@ -193,3 +200,10 @@ bundle 层加入，并从 package manifest 发现 client bundle。
 - 高危两项均已在 0.3.0 修复：`loadStableFile` 增加 50KiB 三层字节防护（stat 前置 / 读后校验 / 编辑参数递归，超限抛 `HASHLINE_FILE_TOO_LARGE`）；scoped 注册部分失败改为 `added[]` 统一可逆清理（回归覆盖第二段失败时释放 deny restriction）。
 - 中危两项均已在 0.3.0 修复：CLI `--profile` 增加 `validateProfileName` 穿越校验；扁平 op 按 `EDIT_KINDS` 逐操作校验锚点字段，多余锚点字段拒绝而非静默忽略。
 - 升级策略：全局工具名冲突时直接抛错会炸整个 composition，应先探测再注册；`client.ts` 已完整构造 ReadBlock 7 字段 labels（正面范例，升版仍需复核）；`runtime-entry.ts` 的 query-string 缓存 shim 仅限开发链路，勿扩大依赖。
+
+## 桌面版 DSH 适配（2026-09-27）
+
+- `src/profile-modules.ts`：`profileName()` 拆出纯函数 `profileNameFrom(argv, electronVersion)`——桌面 Host（Electron RunAsNode）argv 不带 `--profile`，`process.versions.electron` 有值时判 `desktop`，否则回落 `web`；显式 `--profile` 仍最优先。修的是 createRequire 锚错 profile（web）导致拿不到与运行时同实例 DSH 模块的问题。
+- `src/bin/dsh-hashline.mts`：`runDshPlugin` 按名拒绝 `desktop` profile（含阻止 pnpm 兜底绕过 dsh CLI 保护）；`parseArgs` 对 desktop profile 未显式 `--port` 时默认 19387。
+- 回归：`test/plugin.test.mjs` 两个新用例（profile 探测矩阵 + CLI 拦截）。
+- 共性事实与验收记录见工作区根 `docs/dsh-desktop-support.md`。

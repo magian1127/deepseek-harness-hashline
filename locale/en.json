@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Hashline",
+    "description": "Hash-anchored UTF-8 file reading and atomic editing tools for DeepSeek Harness."
+  }
+}

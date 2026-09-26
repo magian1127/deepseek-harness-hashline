@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Hashline 行级编辑",
+    "description": "以 LINE:HASH 哈希锚点读取文件并原子化编辑的实验性工具。"
+  }
+}

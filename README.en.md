@@ -41,7 +41,14 @@
 
 ## Installation
 
-DSH bundles are profile-scoped, so Web, Open Design, and stock headless must be installed independently. Use this plugin's CLI for Web and official `dsh plugin` commands for non-interactive profiles. Build a source checkout first:
+DSH bundles are profile-scoped, so Web, Open Design, and stock headless must be installed independently. Use this plugin's CLI for Web and official `dsh plugin` commands for non-interactive profiles. **DSH Desktop (the Electron app)**: supported (desktop Host port 19387); the desktop profile (`~/.dsh/profiles/desktop`) is owned exclusively by the app, and both the `dsh plugin` CLI and this plugin's CLI reject `--profile desktop` by name. For a link dev install (while the app is **not running**), edit `~/.dsh/profiles/desktop/package.json`:
+
+```jsonc
+"dependencies": { "deepseek-harness-hashline": "link:<absolute path to this repo>" },
+"dsh": { "profile": { "bundles": [ /* keep official bundles, append */ "deepseek-harness-hashline" ] } }
+```
+
+then `pnpm install` inside the profile directory; start the app to mount, `npm run build` + restart after source changes, remove both entries + `pnpm install` to uninstall. Build a source checkout first:
 
 ```powershell
 npm install
