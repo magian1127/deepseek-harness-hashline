@@ -10,7 +10,7 @@
 
 <p align="center">
   <img alt="Status Experimental" src="https://img.shields.io/badge/Status-Experimental-ff6b6b">
-  <img alt="Version 0.3.3" src="https://img.shields.io/badge/Version-0.3.3-5965d8">
+  <img alt="Version 0.3.4" src="https://img.shields.io/badge/Version-0.3.4-5965d8">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-3b7a57">
 </p>
 
@@ -35,7 +35,8 @@
 
 ## Requirements
 
-- DeepSeek Harness ≥ 0.1.7-alpha.2; the Web GUI uses `web`, Open Design stdio uses `open-design`, and DSH one-shot tasks use `headless`
+- **DeepSeek Harness `>=0.2.0-rc.2 <0.3.0-0`** (the `engines.dsh` field in `package.json`, enforced by the host on install and profile startup; 0.1.x and earlier are rejected as incompatible)
+- Open Design stdio uses the `open-design` profile, DSH one-shot tasks use `headless`, and the Web GUI uses `web`
 - Node.js `^22.19.0 || >=24.0.0`
 - `open-design`/`headless` run the Host half only (no Web configuration form)
 

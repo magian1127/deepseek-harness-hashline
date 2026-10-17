@@ -20,7 +20,12 @@
 
 ## 环境要求
 
-- DeepSeek Harness ≥ 0.1.7-alpha.2；Web 使用 `web`，Open Design stdio 使用 `open-design`，DSH 一次性任务使用 `headless`
+- **DeepSeek Harness `>=0.2.0-rc.2 <0.3.0-0`**（`package.json` 的 `engines.dsh`）。这是 DSH 0.2.1-alpha.3 引入的准入门禁：清单有
+  `engines.dsh` 时它**单独决定**结果，`peerDependencies` 被完全忽略；判定用
+  `semver.satisfies(version, range, { includePrerelease: true })`，故 `0.2.1-rc.2` 这类预发布运行时也能通过。
+  范围下界 `0.2.0-rc.2` 覆盖整个 0.2.x 家族，0.1.x 及更早一律判不兼容并拒绝加载。
+  `engines.dsh` 里**不允许**写 `workspace:` 协议（写在 `peerDependencies` 里才可以）。
+- Open Design stdio 使用 `open-design`，DSH 一次性任务使用 `headless`，Web 使用 `web`
 - Node.js `^22.19.0 || >=24.0.0`
 - Web 配置表单要求 DSH ≥ 0.1.7-alpha.2（keyed Slot `plugins.bundle.config`，键为本包 npm 包名）；`open-design`/`headless` 只运行 Host 工具和设置门控
 
@@ -74,12 +79,34 @@ dsh plugin --profile headless add "link:<绝对路径>/deepseek-harness-hashline
 schemastery），`file:` 与 `link:` 安装走同一条路径；加载失败时降级为普通 `Error` 并关闭 settings
 UI，而不是启动失败。
 
+**ESM 命名空间折算（DSH 0.2.1 修正）**：不能无条件取 `mod.default`。两个包的形状并不一致：
+
+| 包 | `exports["."]` 的 import 条目 | `default` 是什么 | 需要的成员在哪 |
+| --- | --- | --- | --- |
+| `@deepseek-ai/schemastery` | `./lib/index.mjs` | schemastery 函数本身（聚合面） | `default` 上 |
+| `@deepseek-ai/dsh-llm` | `./lib/index.js` | **`LlmRuntime` 类** | `HarnessError` 等**只在具名导出**里 |
+
+依据：`packages/llm/llm/src/index.ts` 末尾是 `export { … HarnessError … }` 加 `export default LlmRuntime`。
+只取 `default` 会让 `HarnessError` 静默丢失，本插件随即退化成普通 `Error`，失去与宿主同一实例的
+错误身份与结构化 `{ name, code }`（宿主 `packages/core/tools/src/index.ts` 的 `errorInfo()` 用
+`error instanceof HarnessError` 判定）。
+
+因此 `shapeModule()` 的规则是：**需要具名导出的模块返回整个命名空间**（它同时含 `default` 与各具名
+导出）；不需要具名导出的模块保持原来的 `default` 优先。`src/core.ts` 的 `HarnessErrorBase` 同时尝试
+`ns.HarnessError` 与 `ns.default.HarnessError` 两种形状。`test/fixtures` 里的最小替身用
+`module.exports = { HarnessError }`（CJS），与真实 ESM 命名空间两条路径都被覆盖。
+
 加载契约（DSH 0.1.7-rc 起）：宿主组合批次经模块 hooks 管线并行动态 import 官方插件的 ESM，
 插件在同步求值里 `require(esm)`（含目标包 CJS 入口内部的 require）会撞 Node 的「not yet fully
 loaded」，且管线正被自身同步栈阻塞，任何同步重试都无效。因此 `src/profile-modules.ts` 在模块
 顶层用 `require.resolve` 只解析（不求值、无竞态）、读 exports 取 `import` 条目、以文件 URL 异步
 `import` 预载（TLA），整条依赖链随同一条管线串行交付；预载失败后才走同步 require 兜底（脱离
-profile 的测试/CLI 环境），再失败即永久降级。
+profile 的测试/CLI 环境），再失败即永久降级。同步兜底与异步预载共用 `shapeModule()`，两条路径
+的折算规则一致。
+
+schemastery 版本：DSH 0.2.1-rc.2 检出为 `3.18.5`，活动 profile 可能是 `3.18.4`；两者的
+`Schema.prototype.volatile()` 都存在，`markVolatile()` 的 `meta.volatile` 直写分支只为兼容 3.18.2
+及更早的旧 profile 保留，不是当前主路径。
 
 展示层依赖 `diff`（^9.0.0，与 DSH 原生 tool-fs 同库同上下文策略）写入本包 `dependencies`；它是纯运行时
 依赖，`npm install` 后由 Node 从本包目录解析，不依赖 profile 提供。
@@ -133,6 +160,23 @@ npm pack --dry-run --json
 - `check`：先执行完整 TypeScript/客户端构建，再对生成的 `lib/` 和 `test/` 做语法检查。
 - `test`：四组回归覆盖核心编辑、展示、设置、Agent scope，以及 `headlessStartup` / `openDesignStartup` 同步与延迟出现时默认关闭和显式开启的无头替换门控。
 - `pack --dry-run`：`prepack` 自动重跑 `check` 与 `test`；发布清单包含 `lib/`、`docs/`、patch 与 README/LICENSE。
+
+### `engines.dsh` 门禁验证
+
+清单改动后用宿主**真实的** `evaluatePluginCompatibility`（`packages/boot/app-boot/src/plugin-compatibility.ts`）核对，
+不要自己复刻 semver 判断——官方实现带 `includePrerelease`，手写版会把 `0.2.1-rc.2` 误判为不兼容。
+在工作区根的 `temp/` 下用共享验证器（路径按各自环境给出，不写进受管文件）：
+
+```powershell
+# 在 DSH 检出目录下执行；正向必须退出 0
+npx tsx <工作区>/temp/check-engines-dsh.mjs deepseek-harness-hashline
+
+# 负向必须退出 1（证明门禁真的生效，不是空声明）
+npx tsx <工作区>/temp/check-engines-dsh.mjs deepseek-harness-hashline --runtime 0.1.7-alpha.2
+```
+
+负向版本**不要**用 `0.2.0-rc.2`：它是本包范围 `>=0.2.0-rc.2 <0.3.0-0` 的下界本身，必然通过。
+`0.1.7-alpha.2`、`0.1.7`、`0.2.0-rc.1`、`0.3.0`、`0.3.0-rc.1` 都会被正确判为不兼容。
 
 ## 当前 GUI 验证路径
 

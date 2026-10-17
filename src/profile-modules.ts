@@ -11,6 +11,11 @@ interface ModuleState {
   failed: boolean
 }
 
+// 各模块**必须**能从 profile 拿到的具名导出（见 mergeNamedExports 的说明）。
+// 空数组 = 该模块的 default 就是完整聚合面，不做补齐。
+const SCHEMASTERY_EXPORTS: readonly string[] = []
+const DSH_LLM_EXPORTS: readonly string[] = ['HarnessError']
+
 const schemasteryState: ModuleState = { cache: undefined, failed: false }
 const dshLlmState: ModuleState = { cache: undefined, failed: false }
 
@@ -63,29 +68,63 @@ function profileEntryPath(requireFromProfile: NodeRequire, name: string): string
   return requireEntry
 }
 
-async function importFromProfile(name: string, state: ModuleState): Promise<void> {
+/**
+ * 把 ESM 命名空间折算成调用方要用的形状。
+ *
+ * 默认取 `mod.default`：DSH 的运行时包多数把聚合面放在 default 上，且调用方
+ * 会直接在返回值上调用成员（例如 `loadSchemastery()` 的返回值当 `z` 用，
+ * `z.object(...)`），因此**不能**改包成 `{ default }`。
+ *
+ * 但 `@deepseek-ai/dsh-llm` 恰恰不是这种形状：它的末尾是
+ * `export { … HarnessError … }; export default LlmRuntime`——default 是**一个类**，
+ * `HarnessError` 只存在于具名导出（`packages/llm/llm/src/index.ts:1218`）。
+ * 只取 default 会静默丢掉 `HarnessError`，本插件就退化成普通 `Error`，丢失与
+ * 宿主同一实例的错误身份与结构化 `{ name, code }`
+ * （宿主 `packages/core/tools/src/index.ts` 的 `errorInfo()` 用
+ * `error instanceof HarnessError` 判定）。
+ *
+ * 因此：该模块需要具名导出时，返回**整个命名空间**（它同时含 `default` 与
+ * 各具名导出），调用方按需取成员即可；不修改任何已加载模块对象，无副作用。
+ * 不需要具名导出的模块保持原样（`default` 优先），行为与旧版逐字一致。
+ */
+function shapeModule(
+  mod: { default?: unknown } | null | undefined,
+  namedExports: readonly string[],
+): unknown {
+  if (mod === null || mod === undefined) return undefined
+  if (namedExports.length > 0) return mod
+  return mod.default !== undefined ? mod.default : mod
+}
+
+async function importFromProfile(
+  name: string,
+  state: ModuleState,
+  namedExports: readonly string[],
+): Promise<void> {
   try {
     const requireFromProfile = createRequire(join(profileDir(), 'package.json'))
     const entry = profileEntryPath(requireFromProfile, name)
     const mod = (await import(pathToFileURL(entry).href)) as { default?: unknown } | null | undefined
-    state.cache = mod !== null && mod !== undefined && mod.default !== undefined ? mod.default : mod
+    state.cache = shapeModule(mod, namedExports)
   } catch {
     state.cache = undefined
   }
 }
 
 // 串行预载：失败保持 cache undefined，由 loadFromProfile 的同步兜底兜住。
-await importFromProfile('@deepseek-ai/schemastery', schemasteryState)
-await importFromProfile('@deepseek-ai/dsh-llm', dshLlmState)
+await importFromProfile('@deepseek-ai/schemastery', schemasteryState, SCHEMASTERY_EXPORTS)
+await importFromProfile('@deepseek-ai/dsh-llm', dshLlmState, DSH_LLM_EXPORTS)
 
-function loadFromProfile(name: string, state: ModuleState): unknown {
+function loadFromProfile(name: string, state: ModuleState, namedExports: readonly string[]): unknown {
   if (state.cache !== undefined) return state.cache
   if (state.failed) return null
   // 同步兜底：仅预载失败后（如脱离 profile 的测试/CLI 环境）首次调用时尝试；
   // 引擎环境再次拒绝即永久标记，避免每次调用都抛错。
   try {
     const mod = createRequire(join(profileDir(), 'package.json'))(name)
-    state.cache = mod !== null && mod !== undefined && mod.default !== undefined ? mod.default : mod
+    // 与 importFromProfile 同一折算规则：CJS 的 default 往往被 interop 成本身，
+    // 但具名导出仍必须可见（dsh-llm 的 HarnessError）。
+    state.cache = shapeModule(mod, namedExports)
   } catch {
     state.failed = true
     return null
@@ -94,9 +133,9 @@ function loadFromProfile(name: string, state: ModuleState): unknown {
 }
 
 export function loadSchemastery(): unknown {
-  return loadFromProfile('@deepseek-ai/schemastery', schemasteryState)
+  return loadFromProfile('@deepseek-ai/schemastery', schemasteryState, SCHEMASTERY_EXPORTS)
 }
 
 export function loadDshLlm(): unknown {
-  return loadFromProfile('@deepseek-ai/dsh-llm', dshLlmState)
+  return loadFromProfile('@deepseek-ai/dsh-llm', dshLlmState, DSH_LLM_EXPORTS)
 }

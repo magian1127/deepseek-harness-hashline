@@ -5,8 +5,17 @@ type HarnessErrorConstructor = new (message: string, code: string, options?: Err
 
 // 优先从 profile 解析 DSH 的 HarnessError（与主进程同一实例，保留错误身份
 // 与结构化 { name, code } 序列化）；profile 不可用时降级为普通 Error。
+//
+// DSH 0.2.1 起 @deepseek-ai/dsh-llm 的 default 导出是 LlmRuntime 类本身，
+// HarnessError 只在具名导出里（packages/llm/llm/src/index.ts 末尾
+// `export default LlmRuntime`）。loadDshLlm() 因此返回整个命名空间，这里两种
+// 形状都取：既兼容「default 即聚合面」的旧包，也覆盖当前 DSH。
+const dshLlmModule = loadDshLlm() as
+  | { HarnessError?: HarnessErrorConstructor; default?: { HarnessError?: HarnessErrorConstructor } }
+  | null
 const HarnessErrorBase: HarnessErrorConstructor =
-  (loadDshLlm() as { HarnessError?: HarnessErrorConstructor } | null)?.HarnessError ??
+  dshLlmModule?.HarnessError ??
+  dshLlmModule?.default?.HarnessError ??
   (Error as unknown as HarnessErrorConstructor)
 
 

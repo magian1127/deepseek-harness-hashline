@@ -46,7 +46,11 @@ interface SchemaField {
   step(value: number): SchemaField
   min(value: number): SchemaField
   max(value: number): SchemaField
-  /** DSH 0.1.7+ schemastery(3.18.3)提供易变标记;3.18.2 缺席时走 meta 直写。 */
+  /**
+   * 易变标记。schemastery 3.18.3 起提供；3.18.2 及更早缺席时走 meta 直写。
+   * DSH 0.2.1-rc.2 的检出与活动 profile 都已是 3.18.4/3.18.5，此分支只为兼容
+   * 仍未升级的旧 profile 而保留（不是当前主路径）。
+   */
   volatile?(): SchemaField
   meta?: Record<string, unknown>
 }
