@@ -10,7 +10,7 @@
 
 <p align="center">
   <img alt="Status Experimental" src="https://img.shields.io/badge/Status-Experimental-ff6b6b">
-  <img alt="Version 0.3.4" src="https://img.shields.io/badge/Version-0.3.4-5965d8">
+  <img alt="Version 0.3.5" src="https://img.shields.io/badge/Version-0.3.5-5965d8">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-3b7a57">
 </p>
 

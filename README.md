@@ -10,7 +10,7 @@
 
 <p align="center">
   <img alt="状态 测试中" src="https://img.shields.io/badge/状态-测试中-ff6b6b">
-  <img alt="版本 0.3.4" src="https://img.shields.io/badge/版本-0.3.4-5965d8">
+  <img alt="版本 0.3.5" src="https://img.shields.io/badge/版本-0.3.5-5965d8">
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-3b7a57">
 </p>
 
