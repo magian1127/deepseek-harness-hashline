@@ -375,6 +375,8 @@ test('apply 注册两个工具和一个提示词 section', () => {
   apply(harness.ctx, harness.config)
   assert.deepEqual([...harness.tools.keys()], ['hashline_read', 'hashline_edit'])
   assert.deepEqual([...harness.sections.keys()], ['tool:hashline'])
+  // 新增工具说明段同样落在工具说明区（紧跟官方 TOOL_EDIT），不能是 persona 区低位。
+  assert.equal(harness.sections.get('tool:hashline').order, 1310)
   assert.equal(harness.tools.get('hashline_read').isConcurrencySafe(), true)
 })
 

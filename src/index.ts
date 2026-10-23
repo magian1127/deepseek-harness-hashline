@@ -1467,6 +1467,12 @@ function createEditTool(
 const OFFICIAL_TOOL_READ_ORDER = 1100
 const OFFICIAL_TOOL_EDIT_ORDER = 1300
 
+/**
+ * 全局 `tool:hashline` 是**新增**工具说明段（DSH 无同名片），但仍属工具说明区：
+ * 紧跟官方 `TOOL_EDIT`(1300) 之后，而不是 persona 区（<1000）的低位。
+ */
+const TOOL_HASHLINE_ORDER = 1310
+
 /** 官方段位置：替换型 section 必须沿用原版 order。 */
 function officialSectionOrder(prompt: SystemPromptService, name: 'TOOL_READ' | 'TOOL_EDIT', fallback: number): number {
   try {
@@ -1759,7 +1765,7 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
       added.push(ctx.tools.register(createReadTool(ctx, toEditOptions(effective), 'hashline_edit')))
       added.push(ctx.tools.register(createEditTool(ctx, toEditOptions(effective), sandbox, 'hashline_edit', 'hashline_read')))
       if (effective.promptGuidance && !effective.replaceBuiltinEdit) {
-        added.push(ctx.systemPrompt.section({ name: 'tool:hashline', order: 103, text: guidanceText(effective) }))
+        added.push(ctx.systemPrompt.section({ name: 'tool:hashline', order: TOOL_HASHLINE_ORDER, text: guidanceText(effective) }))
       }
       return added
     } catch (error) {
