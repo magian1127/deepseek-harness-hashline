@@ -86,6 +86,10 @@ function createHarness(options = {}) {
       },
     }
       const scopedPromptService = {
+        // 官方段位置查询：替换型 section 必须沿用官方 order（DSH TOOL_READ=1100 / TOOL_EDIT=1300）。
+        getSectionOrder(name) {
+          return name === 'TOOL_READ' ? 1100 : name === 'TOOL_EDIT' ? 1300 : 0
+        },
         section(section) {
           if (scopedPrompt.has(section.name)) throw new Error(`duplicate scoped section ${section.name}`)
           scopedPrompt.set(section.name, section)
@@ -110,6 +114,7 @@ function createHarness(options = {}) {
       agent.__scopedTools = scoped
       agent.__restrictions = restrictions
       agent.__scopedPrompt = scopedPrompt
+      agent.__scopedPromptService = scopedPromptService
       agent.__inheritedHidden = inheritedHidden
     agent.__inheritedHidden = inheritedHidden
     agent.__preset = preset
@@ -489,6 +494,8 @@ test('replaceBuiltinEdit 对现有 Agent 可逆遮蔽内置 read/edit', async ()
   // 替换模式下不再注册全局 tool:hashline，改为 Agent scope 同名阴影内置提示；
   // read/edit 各用针对性文本，不重复（read 段讲读取、edit 段讲编辑）。
   assert.equal(harness.sections.get('tool:hashline'), undefined)
+  assert.equal(harness.agent.__scopedPrompt.get('tool:read').order, 1100, '替换段沿用官方 TOOL_READ 位置')
+  assert.equal(harness.agent.__scopedPrompt.get('tool:edit').order, 1300, '替换段沿用官方 TOOL_EDIT 位置')
   assert.match(harness.agent.__scopedPrompt.get('tool:read').text, /LINE:HASH anchors/)
   assert.ok(!/strictly hash-anchored/.test(harness.agent.__scopedPrompt.get('tool:read').text))
   assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /strictly hash-anchored/)
@@ -497,6 +504,12 @@ test('replaceBuiltinEdit 对现有 Agent 可逆遮蔽内置 read/edit', async ()
     assert.ok(!/old_string\/new_string/.test(harness.agent.__scopedPrompt.get('tool:edit').text))
     assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /Use write for new files/)
   assert.match(harness.agent.__scopedPrompt.get('tool:edit').text, /Use write for new files/)
+
+  // 旧宿主没有 getSectionOrder:回退本地官方常量,绝不退回自定位置。
+  delete harness.agent.__scopedPromptService.getSectionOrder
+  harness.updateSettings({ replaceBuiltinEdit: true })
+  assert.equal(harness.agent.__scopedPrompt.get('tool:read').order, 1100, '旧宿主回退官方 TOOL_READ 位置')
+  assert.equal(harness.agent.__scopedPrompt.get('tool:edit').order, 1300, '旧宿主回退官方 TOOL_EDIT 位置')
 
   const read = await readTool.execute({ file_path: 'sample.txt' }, harness.exec)
   // 执行器容忍旧适配器物化的精确空哨兵；schema 不公开这些字段，

@@ -202,6 +202,8 @@ interface PromptSection {
 
 interface SystemPromptService {
     section(section: { name: string; order: number; text: string }): () => void
+    /** DSH systemPrompt 服务的官方段位置查询；旧宿主缺席时回退本地常量。 */
+    getSectionOrder?(name: string): number
     assemble?(context?: { scope?: unknown }): Promise<{ sections?: Array<{ name?: string; text?: string | ((context?: unknown) => string) }> }>
 }
 
@@ -1456,6 +1458,25 @@ function createEditTool(
   }
 }
 
+/**
+ * 官方 tool-fs 的段位置（DSH `SECTION_ORDERS.TOOL_READ` / `TOOL_EDIT`）。
+ * 替换模式用同名 `tool:read` / `tool:edit` section 阴影内置原文，是**替换**而非
+ * 新增段：order 必须沿用官方值，否则这两个说明会从工具区挪到 persona 之后。
+ * 运行时优先读 `systemPrompt.getSectionOrder(...)`，常量只作旧宿主回退。
+ */
+const OFFICIAL_TOOL_READ_ORDER = 1100
+const OFFICIAL_TOOL_EDIT_ORDER = 1300
+
+/** 官方段位置：替换型 section 必须沿用原版 order。 */
+function officialSectionOrder(prompt: SystemPromptService, name: 'TOOL_READ' | 'TOOL_EDIT', fallback: number): number {
+  try {
+    const order = prompt.getSectionOrder?.(name)
+    return typeof order === 'number' && Number.isFinite(order) ? order : fallback
+  } catch {
+    return fallback
+  }
+}
+
 function guidanceText(options: ResolvedConfig): string {
   if (options.zhPrompt) {
     return (
@@ -1707,8 +1728,9 @@ export function apply(ctx: DshContext, config: Record<string, unknown> = {}): vo
         if (typeof scopedPrompt?.section === 'function') {
           const promptDisposers: Array<() => void> = []
           try {
-              promptDisposers.push(scopedPrompt.section({ name: 'tool:read', order: 100, text: readGuidanceText(current) }))
-              promptDisposers.push(scopedPrompt.section({ name: 'tool:edit', order: 102, text: editGuidanceText(current) }))
+              // 替换官方同名段，不是新增段：位置必须与官方 TOOL_READ/TOOL_EDIT 一致。
+              promptDisposers.push(scopedPrompt.section({ name: 'tool:read', order: officialSectionOrder(scopedPrompt, 'TOOL_READ', OFFICIAL_TOOL_READ_ORDER), text: readGuidanceText(current) }))
+              promptDisposers.push(scopedPrompt.section({ name: 'tool:edit', order: officialSectionOrder(scopedPrompt, 'TOOL_EDIT', OFFICIAL_TOOL_EDIT_ORDER), text: editGuidanceText(current) }))
           } catch (error) {
             disposeAll(promptDisposers)
             throw error

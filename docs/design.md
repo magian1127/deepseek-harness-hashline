@@ -118,7 +118,7 @@ BOM 静默丢失。旧 DSH 无 `readBytes` 时回退 `readText`（BOM 维持历�
 - `agents.list()` 与 `agent/created` 为现有及新 Agent 安装可选 scoped `edit`。
 - `headlessStartup` / `openDesignStartup` 的同步探测与延迟 inject 用于计算 `replaceBuiltinEditInHeadless`；它只改变同名替换，不改变全局 Hashline 工具注册；
 
-提示词注入分两种运行态：有效替换模式在每个 Agent 的自身作用域注册同名 `tool:read` / `tool:edit` section（order 100 / 102），利用 DSH system-prompt 的 scope 层同名阴影规则替换内置原文；普通模式（含 headless 门控关闭）全局注册 `tool:hashline`（order 103）。严格 `tool:edit` 文本要求先读、每个数组项一个锚定操作，并明确禁用文本替换与 `replace`；门控切换后 scoped 阴影与全局提示随整组 disposer 互换，不留下错误工具名。
+提示词注入分两种运行态：有效替换模式在每个 Agent 的自身作用域注册同名 `tool:read` / `tool:edit` section（order 沿用官方 `TOOL_READ` / `TOOL_EDIT`，即 1100 / 1300；运行时经 `systemPrompt.getSectionOrder` 读取，旧宿主回退常量），利用 DSH system-prompt 的 scope 层同名阴影规则替换内置原文；普通模式（含 headless 门控关闭）全局注册 `tool:hashline`（order 103，这是新增段而非替换段，可自定位置）。严格 `tool:edit` 文本要求先读、每个数组项一个锚定操作，并明确禁用文本替换与 `replace`；门控切换后 scoped 阴影与全局提示随整组 disposer 互换，不留下错误工具名。
 
 阴影文本必须按工具拆分（`readGuidanceText` / `editGuidanceText`），不能把同一段合并说明同时塞进
 `tool:read` 与 `tool:edit`：两段完全相同的文本会在组装后的系统提示词里重复出现，重蹈“多出来”的旧。
